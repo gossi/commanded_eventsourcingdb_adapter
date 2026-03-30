@@ -1,0 +1,60 @@
+defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
+  @moduledoc false
+  alias Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher
+
+  use Supervisor
+
+  # alias Commanded.EventStore.Adapters.Extreme.EventPublisher
+  # alias Commanded.EventStore.Adapters.Extreme.SubscriptionsSupervisor
+
+  def start_link(config) do
+    event_store = Keyword.fetch!(config, :event_store)
+    name = Module.concat([event_store, Supervisor])
+
+    Supervisor.start_link(__MODULE__, config, name: name)
+  end
+
+  @impl Supervisor
+  def init(config) do
+    # all_stream = Config.all_stream(config)
+    esdb_config = Keyword.get(config, :client)
+    # serializer = Config.serializer(config)
+
+    event_store = Keyword.fetch!(config, :event_store)
+    event_publisher_name = Module.concat([event_store, EventPublisher])
+    pubsub_name = Module.concat([event_store, PubSub])
+    subscriptions_name = Module.concat([event_store, SubscriptionsSupervisor])
+
+    children = [
+      {Registry, keys: :duplicate, name: pubsub_name, partitions: 1},
+      %{
+        id: EventSourcingDB,
+        start: {EventSourcingDB, :start_link, [esdb_config, [name: event_store]]},
+        restart: :permanent,
+        shutdown: 5000,
+        type: :worker
+      },
+      %{
+        id: EventPublisher,
+        start:
+          {EventPublisher, :start_link,
+           [
+             {
+               event_store,
+               pubsub_name
+               #  all_stream
+               #  serializer
+             },
+             [name: event_publisher_name]
+           ]},
+        restart: :permanent,
+        shutdown: 5000,
+        type: :worker
+      },
+      {SubscriptionsSupervisor, name: subscriptions_name}
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
+    {:ok, config}
+  end
+end
