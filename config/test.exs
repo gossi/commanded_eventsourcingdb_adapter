@@ -13,7 +13,6 @@ config :commanded,
 config :commanded_eventsourcingdb_adapter, EventSourcingDBApplication,
   event_store: [
     adapter: Commanded.EventStore.Adapters.EventSourcingDB,
-    # serializer: Commanded.Serialization.JsonSerializer,
     client: [
       api_token: "secret",
       base_url: "http://localhost:3000"

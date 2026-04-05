@@ -1,11 +1,9 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
   @moduledoc false
-  alias Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher
 
   use Supervisor
 
-  # alias Commanded.EventStore.Adapters.Extreme.EventPublisher
-  # alias Commanded.EventStore.Adapters.Extreme.SubscriptionsSupervisor
+  alias Commanded.EventStore.Adapters.EventSourcingDB.Config
 
   def start_link(config) do
     event_store = Keyword.fetch!(config, :event_store)
@@ -16,45 +14,32 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
 
   @impl Supervisor
   def init(config) do
-    # all_stream = Config.all_stream(config)
-    esdb_config = Keyword.get(config, :client)
-    # serializer = Config.serializer(config)
-
     event_store = Keyword.fetch!(config, :event_store)
-    event_publisher_name = Module.concat([event_store, EventPublisher])
+    client_config = Keyword.fetch!(config, :client)
+    client = Config.client(client_config)
     pubsub_name = Module.concat([event_store, PubSub])
     subscriptions_name = Module.concat([event_store, SubscriptionsSupervisor])
+    subscription_registry_name = Module.concat([event_store, SubscriptionRegistry])
+    stream_prefix = Keyword.get(config, :stream_prefix, "")
+
+    Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore.init()
 
     children = [
       {Registry, keys: :duplicate, name: pubsub_name, partitions: 1},
-      %{
-        id: EventSourcingDB,
-        start: {EventSourcingDB, :start_link, [esdb_config, [name: event_store]]},
-        restart: :permanent,
-        shutdown: 5000,
-        type: :worker
-      },
-      %{
-        id: EventPublisher,
-        start:
-          {EventPublisher, :start_link,
-           [
-             {
-               event_store,
-               pubsub_name
-               #  all_stream
-               #  serializer
-             },
-             [name: event_publisher_name]
-           ]},
-        restart: :permanent,
-        shutdown: 5000,
-        type: :worker
-      },
-      {SubscriptionsSupervisor, name: subscriptions_name}
+      {Registry,
+       keys: :duplicate, name: Module.concat([event_store, Subscriptions]), partitions: 1},
+      {Registry,
+       keys: :unique, name: Module.concat([event_store, SubscriptionProcesses]), partitions: 1},
+      {DynamicSupervisor, strategy: :one_for_one, name: subscriptions_name},
+      {Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionRegistry,
+       name: subscription_registry_name},
+      {Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher,
+       client: client,
+       pubsub: pubsub_name,
+       transient_pubsub: Module.concat([event_store, Subscriptions]),
+       subject: "/#{stream_prefix}"}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
-    {:ok, config}
   end
 end
