@@ -14,7 +14,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionManager do
   use GenServer
 
   alias Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore
-  alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, %{}, opts)
@@ -27,7 +26,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionManager do
   def create_subscription(pid, stream_uuid, subscription_name, subscriber, start_from, opts) do
     GenServer.call(
       pid,
-      {:create_subscription, stream_uuid, subscription_name, subscriber, start_from, opts}
+      {:create_subscription, stream_uuid, subscription_name, subscriber, start_from, opts},
+      30_000
     )
   end
 
@@ -88,26 +88,48 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionManager do
 
   @impl GenServer
   def handle_call(
-        {:create_subscription, stream_uuid, subscription_name, subscriber, start_from, _opts},
+        {:create_subscription, stream_uuid, subscription_name, subscriber, start_from, opts},
         _from,
         state
       ) do
     key = {stream_uuid, subscription_name}
+    concurrency_limit = Keyword.get(opts, :concurrency_limit, 1)
 
-    if Map.has_key?(state, key) do
-      {:reply, {:error, :subscription_already_exists}, state}
-    else
-      checkpoint = get_checkpoint_from_store(subscription_name, stream_uuid)
+    case Map.get(state, key) do
+      nil ->
+        checkpoint = get_checkpoint_from_store(subscription_name, stream_uuid)
 
-      subscription = %{
-        stream_uuid: stream_uuid,
-        subscription_name: subscription_name,
-        subscriber: subscriber,
-        start_from: start_from,
-        checkpoint: checkpoint
-      }
+        subscription = %{
+          stream_uuid: stream_uuid,
+          subscription_name: subscription_name,
+          subscriber: subscriber,
+          start_from: start_from,
+          checkpoint: checkpoint,
+          concurrency_limit: concurrency_limit,
+          subscribers: [subscriber]
+        }
 
-      {:reply, {:ok, subscription}, Map.put(state, key, subscription)}
+        Process.monitor(subscriber)
+        {:reply, {:ok, subscription}, Map.put(state, key, subscription)}
+
+      %{subscribers: subscribers, concurrency_limit: limit} ->
+        cond do
+          subscriber in subscribers ->
+            {:reply, {:error, :subscription_already_exists}, state}
+
+          length(subscribers) < limit ->
+            Process.monitor(subscriber)
+
+            updated =
+              Map.update!(state, key, fn s ->
+                %{s | subscribers: [subscriber | s.subscribers]}
+              end)
+
+            {:reply, {:ok, Map.get(updated, key)}, updated}
+
+          true ->
+            {:reply, {:error, :too_many_subscribers}, state}
+        end
     end
   end
 
@@ -174,7 +196,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionManager do
   end
 
   def handle_call({:stop_observing_by_pid, observer_pid}, _from, state) do
-    case Enum.find(state, fn {_, v} -> v.subscriber == observer_pid end) do
+    case Enum.find(state, fn {_, v} -> observer_pid in v.subscribers end) do
       {key, _subscription} ->
         {:reply, :ok, state}
 
@@ -189,6 +211,28 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionManager do
     CheckpointStore.delete_checkpoint(subscription_name, stream_uuid)
 
     {:reply, :ok, Map.delete(state, key)}
+  end
+
+  @impl GenServer
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    new_state =
+      state
+      |> Enum.reduce(state, fn
+        {key, %{subscribers: [pid], concurrency_limit: _}}, acc ->
+          Map.delete(acc, key)
+
+        {key, %{subscribers: subscribers, concurrency_limit: limit} = sub}, acc ->
+          if pid in subscribers do
+            Map.put(acc, key, %{sub | subscribers: List.delete(subscribers, pid)})
+          else
+            acc
+          end
+
+        _, acc ->
+          acc
+      end)
+
+    {:noreply, new_state}
   end
 
   defp get_checkpoint_from_store(subscription_name, stream_uuid) do

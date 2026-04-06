@@ -201,23 +201,41 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
            opts
          ) do
       {:ok, subscription} ->
-        {:ok, observer_pid} =
-          ObserverProcess.start_link(
-            client: client(adapter_meta),
-            subscriber: subscriber,
-            subject: subject,
-            stream_uuid: stream_uuid,
-            stream_prefix: stream_prefix,
-            subscription_name: subscription_name,
-            selector: Keyword.get(opts, :selector),
-            checkpoint: subscription.checkpoint,
-            event_store: event_store
-          )
+        if Enum.count(subscription.subscribers) == 1 do
+          {:ok, observer_pid} =
+            ObserverProcess.start_link(
+              client: client(adapter_meta),
+              subscriber: subscriber,
+              subject: subject,
+              stream_uuid: stream_uuid,
+              stream_prefix: stream_prefix,
+              subscription_name: subscription_name,
+              selector: Keyword.get(opts, :selector),
+              checkpoint: subscription.checkpoint,
+              event_store: event_store
+            )
 
-        {:ok, observer_pid}
+          {:ok, observer_pid}
+        else
+          observer_pid =
+            get_observer_pid(event_store, subscription_name, stream_uuid, stream_prefix)
+
+          {:ok, observer_pid}
+        end
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp get_observer_pid(event_store, subscription_name, stream_uuid, stream_prefix) do
+    registry = Module.concat([event_store, :ObserverProcesses])
+    sanitized_prefix = String.replace(stream_prefix, "/", "_")
+    unique_name = "#{subscription_name}:#{stream_uuid}:#{sanitized_prefix}"
+
+    case Registry.lookup(registry, unique_name) do
+      [{pid, _}] -> pid
+      [] -> nil
     end
   end
 
