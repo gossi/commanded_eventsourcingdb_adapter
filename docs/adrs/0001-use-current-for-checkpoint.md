@@ -28,7 +28,13 @@ The challenge is that EventSourcingDB uses a global event counter, and without p
 
 ## Decision Outcome
 
-Chosen option: ":current", because it provides a simple solution for v1 that handles checkpoint loss gracefully. When no checkpoint exists after restart, only new events are delivered. Events written during the restart window are lost but this is an acceptable trade-off for the v1 draft.
+Chosen option: ":current", because it provides a simple solution for v1 that
+handles checkpoint loss gracefully. When no checkpoint exists after restart,
+only new events are delivered. Events written during the restart window are lost
+but this is an acceptable trade-off for the v1 draft.
+
+We assume that commanded is the only event producer and when it's down, no other
+events are produced, that we might miss.
 
 ### Consequences
 
