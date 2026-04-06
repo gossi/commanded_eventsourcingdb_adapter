@@ -27,14 +27,20 @@ The project uses mix with ExUnit. Refer to both documentation for available comm
 
 Here is how ESDB interprets and applies the CloudEvents spec:
 
-- `id`: An event counter maintained by the producer, as per spec is of type
-  string, but contains an integer value
+Explanataion for `EventSourcingDB.Event` module:
+
+- `id`: A global event counter, as per spec is of type string, but contains an
+  integer value
 - Uniqueness: An event is unique by source + id:
   > Producers MUST ensure that source + id is unique for each distinct event.
+- ESDB does NOT have a numbering per subject (or within ONE stream per commanded
+  terms)
 
 ### Stream to Subject Mapping
 
 - A stream prefix is configured _per_ commanded app
+- An app can contain multiple commanded apps.
+- A stream prefix is a namespace (eg. subdomain/bounded context)
 
 #### The Formula
 
@@ -77,7 +83,23 @@ natural hierarchy in ESDB:
     /ORD001
 ```
 
-This enables ESDB queries at any level (all bank accounts, all orders, all events for the app).
+This enables ESDB queries at any level (all bank accounts, all orders, all
+events for the app).
+
+## Editing Code
+
+When editing code, code comments MUST be respected, especially those that
+mention to DO NOT CHANGE something. That is these comments guard certain
+validated facts about the project (read above).
+
+Also, at times commanded has a very opinionated convention/expectation. For
+example the recorded event id must be unique - but the tests explicitely check
+for a UUID format. That is not necessary when the critical fact about a unique
+id is given otherwise. As a matter of that, the code has some macros that
+return different values when run under tests, to comply with these opinionated
+conventions from commanded's test cases.
+
+Respect architecture decision records (ADRs) in `docs/adrs/`.
 
 ## Testing
 
