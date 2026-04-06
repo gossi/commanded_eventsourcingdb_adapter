@@ -8,7 +8,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   alias Commanded.EventStore.Adapters.EventSourcingDB.Config
   alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventMapper
-  alias Commanded.EventStore.Adapters.EventSourcingDB.PersistentSubscription
+  alias Commanded.EventStore.Adapters.EventSourcingDB.ObserverProcess
+  alias Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionManager
 
   @behaviour Commanded.EventStore.Adapter
 
@@ -158,15 +159,21 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @spec subscribe(map(), String.t() | :all) ::
           :ok | {:error, term()}
   def subscribe(adapter_meta, stream_uuid) do
-    event_store = server_name(adapter_meta)
-    transient_pubsub = Module.concat([event_store, Subscriptions])
+    client = client(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
-
     subject = StreamMapper.to_subject(stream_uuid, stream_prefix)
 
-    with {:ok, _} <- Registry.register(transient_pubsub, subject, []) do
-      :ok
-    end
+    # Start a TransientSubscriber to observe events for this subscription
+    {:ok, _pid} =
+      Commanded.EventStore.Adapters.EventSourcingDB.TransientSubscriber.start_link(
+        client: client,
+        subscriber: self(),
+        subject: subject,
+        stream_uuid: stream_uuid,
+        stream_prefix: stream_prefix
+      )
+
+    :ok
   end
 
   @impl Commanded.EventStore.Adapter
@@ -181,52 +188,33 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           {:ok, pid()} | {:error, :subscription_already_exists} | {:error, term()}
   def subscribe_to(adapter_meta, stream_uuid, subscription_name, subscriber, start_from, opts) do
     event_store = server_name(adapter_meta)
-    subscriptions_supervisor = Module.concat(event_store, :SubscriptionsSupervisor)
-    subscriptions_registry = Module.concat(event_store, :SubscriptionProcesses)
-    subscription_registry = Module.concat(event_store, :SubscriptionRegistry)
+    subscription_manager = Module.concat(event_store, :SubscriptionManager)
     stream_prefix = stream_prefix(adapter_meta)
     subject = StreamMapper.to_subject(stream_uuid, stream_prefix)
-    concurrency_limit = Keyword.get(opts, :concurrency_limit, 1)
 
-    case Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionRegistry.register(
-           subscription_registry,
-           subscription_name,
+    case SubscriptionManager.create_subscription(
+           subscription_manager,
            stream_uuid,
-           concurrency_limit
+           subscription_name,
+           subscriber,
+           start_from,
+           opts
          ) do
-      :ok ->
-        child_spec =
-          {PersistentSubscription,
-           client: client(adapter_meta),
-           subscription_name: subscription_name,
-           subject: subject,
-           stream_uuid: stream_uuid,
-           start_from: start_from,
-           subscriber: subscriber,
-           subscription_registry: subscription_registry,
-           subscriptions_registry: subscriptions_registry,
-           stream_prefix: stream_prefix,
-           selector: Keyword.get(opts, :selector)}
+      {:ok, subscription} ->
+        {:ok, observer_pid} =
+          ObserverProcess.start_link(
+            client: client(adapter_meta),
+            subscriber: subscriber,
+            subject: subject,
+            stream_uuid: stream_uuid,
+            stream_prefix: stream_prefix,
+            subscription_name: subscription_name,
+            selector: Keyword.get(opts, :selector),
+            checkpoint: subscription.checkpoint,
+            event_store: event_store
+          )
 
-        case DynamicSupervisor.start_child(subscriptions_supervisor, child_spec) do
-          {:ok, pid} ->
-            {:ok, pid}
-
-          {:error, reason} ->
-            Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionRegistry.unregister(
-              subscription_registry,
-              subscription_name,
-              stream_uuid
-            )
-
-            {:error, reason}
-        end
-
-      {:error, :subscription_already_exists} ->
-        {:error, :subscription_already_exists}
-
-      {:error, :too_many_subscribers} ->
-        {:error, :too_many_subscribers}
+        {:ok, observer_pid}
 
       {:error, reason} ->
         {:error, reason}
@@ -244,10 +232,9 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @spec unsubscribe(map(), pid()) :: :ok
   def unsubscribe(adapter_meta, subscription_pid) when is_pid(subscription_pid) do
     event_store = server_name(adapter_meta)
-    subscriptions_supervisor = Module.concat(event_store, :SubscriptionsSupervisor)
-    _subscriptions_registry = Module.concat(event_store, :Subscriptions)
+    subscription_manager = Module.concat(event_store, :SubscriptionManager)
 
-    DynamicSupervisor.terminate_child(subscriptions_supervisor, subscription_pid)
+    SubscriptionManager.stop_observing_by_pid(subscription_manager, subscription_pid)
     :ok
   end
 
@@ -258,32 +245,16 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           :ok | {:error, :subscription_not_found} | {:error, term()}
   def delete_subscription(adapter_meta, stream_uuid, subscription_name) do
     event_store = server_name(adapter_meta)
-    subscriptions_supervisor = Module.concat(event_store, :SubscriptionsSupervisor)
-    _subscriptions_registry = Module.concat(event_store, :Subscriptions)
-    subscription_registry = Module.concat(event_store, :SubscriptionRegistry)
+    subscription_manager = Module.concat(event_store, :SubscriptionManager)
 
-    CheckpointStore.delete_checkpoint(subscription_name, stream_uuid)
-
-    case Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionRegistry.unregister(
-           subscription_registry,
-           subscription_name,
-           stream_uuid
+    case SubscriptionManager.delete_subscription(
+           subscription_manager,
+           stream_uuid,
+           subscription_name
          ) do
-      :ok ->
-        case Registry.lookup(
-               Module.concat(event_store, :Subscriptions),
-               subscription_name
-             ) do
-          [{pid, _}] ->
-            DynamicSupervisor.terminate_child(subscriptions_supervisor, pid)
-            :ok
-
-          [] ->
-            :ok
-        end
-
-      {:error, :not_found} ->
-        {:error, :subscription_not_found}
+      :ok -> :ok
+      {:error, :not_found} -> {:error, :subscription_not_found}
+      {:error, reason} -> {:error, reason}
     end
   end
 
