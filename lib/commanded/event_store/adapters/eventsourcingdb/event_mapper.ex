@@ -13,9 +13,16 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapper do
       extract_commanded_metadata(event.data, event.type)
 
     %RecordedEvent{
+      # event_id is a unique identifier for the event. See generate_event_id()
+      # DO NOT CHANGE this field
       event_id: generate_event_id(event),
+      # event_number is global counter
+      # DO NOT CHANGE this field
       event_number: String.to_integer(event.id),
+      # Position of event within ONE specific stream
       stream_version: event_number,
+      # The part of the stream_id relevant for commanded
+      # DO NOT CHANGE this field
       stream_id: StreamMapper.get_stream_id(event.subject, stream_prefix),
       event_type: event.type,
       data: data,
@@ -97,6 +104,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapper do
     {:ok, datetime, _offset} = DateTime.from_iso8601(iso8601_datestring)
     datetime
   end
+
+  # DO NOT CHANGE this function (both variants of it)
 
   # Generate the event ID
   #
