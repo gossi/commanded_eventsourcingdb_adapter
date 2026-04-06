@@ -31,20 +31,22 @@ defmodule Commanded.EventStore.EventSourcingDBTestCase do
 
     %{
       event_store: Commanded.EventStore.Adapters.EventSourcingDB,
+      event_store_meta: event_store_meta,
+      esdb_meta: event_store_meta,
       container: container,
-      client: client,
-      base_event_store_meta: event_store_meta
+      client: client
     }
   end
 
   setup context do
     :ok = Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore.init()
 
+    # Create a unique stream prefix for this test to isolate events
     unique_prefix = Commanded.UUID.uuid4()
     stream_prefix = "test/#{unique_prefix}/"
 
     event_store_meta = %{
-      context.base_event_store_meta
+      context.event_store_meta
       | stream_prefix: stream_prefix
     }
 
