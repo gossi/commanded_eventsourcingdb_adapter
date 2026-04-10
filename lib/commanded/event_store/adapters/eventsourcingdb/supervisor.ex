@@ -19,9 +19,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
     Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore.init()
 
     children = [
-      {Registry, keys: :unique, name: observer_processes_name},
-      {Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionManager,
-       name: subscription_manager_name}
+      {Registry, keys: :unique, name: observer_processes_name}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

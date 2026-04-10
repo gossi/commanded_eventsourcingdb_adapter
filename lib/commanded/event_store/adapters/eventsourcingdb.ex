@@ -163,17 +163,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     stream_prefix = stream_prefix(adapter_meta)
     subject = StreamMapper.to_subject(stream_uuid, stream_prefix)
 
-    # Start a TransientSubscriber to observe events for this subscription
-    {:ok, _pid} =
-      Commanded.EventStore.Adapters.EventSourcingDB.TransientSubscriber.start_link(
-        client: client,
-        subscriber: self(),
-        subject: subject,
-        stream_uuid: stream_uuid,
-        stream_prefix: stream_prefix
-      )
-
-    :ok
+    # implement here
   end
 
   @impl Commanded.EventStore.Adapter
@@ -188,55 +178,10 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           {:ok, pid()} | {:error, :subscription_already_exists} | {:error, term()}
   def subscribe_to(adapter_meta, stream_uuid, subscription_name, subscriber, start_from, opts) do
     event_store = server_name(adapter_meta)
-    subscription_manager = Module.concat(event_store, :SubscriptionManager)
     stream_prefix = stream_prefix(adapter_meta)
     subject = StreamMapper.to_subject(stream_uuid, stream_prefix)
 
-    case SubscriptionManager.create_subscription(
-           subscription_manager,
-           stream_uuid,
-           subscription_name,
-           subscriber,
-           start_from,
-           opts
-         ) do
-      {:ok, subscription} ->
-        if Enum.count(subscription.subscribers) == 1 do
-          {:ok, observer_pid} =
-            ObserverProcess.start_link(
-              client: client(adapter_meta),
-              subscriber: subscriber,
-              subject: subject,
-              stream_uuid: stream_uuid,
-              stream_prefix: stream_prefix,
-              subscription_name: subscription_name,
-              selector: Keyword.get(opts, :selector),
-              checkpoint: subscription.checkpoint,
-              event_store: event_store
-            )
-
-          {:ok, observer_pid}
-        else
-          observer_pid =
-            get_observer_pid(event_store, subscription_name, stream_uuid, stream_prefix)
-
-          {:ok, observer_pid}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp get_observer_pid(event_store, subscription_name, stream_uuid, stream_prefix) do
-    registry = Module.concat([event_store, :ObserverProcesses])
-    sanitized_prefix = String.replace(stream_prefix, "/", "_")
-    unique_name = "#{subscription_name}:#{stream_uuid}:#{sanitized_prefix}"
-
-    case Registry.lookup(registry, unique_name) do
-      [{pid, _}] -> pid
-      [] -> nil
-    end
+    # implement here
   end
 
   @impl Commanded.EventStore.Adapter
@@ -250,10 +195,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @spec unsubscribe(map(), pid()) :: :ok
   def unsubscribe(adapter_meta, subscription_pid) when is_pid(subscription_pid) do
     event_store = server_name(adapter_meta)
-    subscription_manager = Module.concat(event_store, :SubscriptionManager)
 
-    SubscriptionManager.stop_observing_by_pid(subscription_manager, subscription_pid)
-    :ok
+    # implement here
   end
 
   def unsubscribe(_adapter_meta, _subscription), do: :ok
@@ -263,17 +206,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           :ok | {:error, :subscription_not_found} | {:error, term()}
   def delete_subscription(adapter_meta, stream_uuid, subscription_name) do
     event_store = server_name(adapter_meta)
-    subscription_manager = Module.concat(event_store, :SubscriptionManager)
 
-    case SubscriptionManager.delete_subscription(
-           subscription_manager,
-           stream_uuid,
-           subscription_name
-         ) do
-      :ok -> :ok
-      {:error, :not_found} -> {:error, :subscription_not_found}
-      {:error, reason} -> {:error, reason}
-    end
+    # implement here
   end
 
   @impl Commanded.EventStore.Adapter
