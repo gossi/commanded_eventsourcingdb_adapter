@@ -4,11 +4,13 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper do
   @doc """
   Converts a stream identifier to an ESDB subject.
   """
-  def to_subject(:all, stream_prefix) do
+  def to_subject(stream_prefix) do
     "/" <> stream_prefix
   end
 
-  def to_subject(stream_uuid, stream_prefix) do
+  def to_subject(stream_prefix, :all), do: to_subject(stream_prefix)
+
+  def to_subject(stream_prefix, stream_uuid) do
     "/" <> stream_prefix <> stream_uuid
   end
 

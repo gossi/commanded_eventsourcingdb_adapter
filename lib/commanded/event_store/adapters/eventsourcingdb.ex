@@ -72,7 +72,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     client = client(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
     source = source(adapter_meta)
-    subject = StreamMapper.to_subject(subject, stream_prefix)
+    subject = StreamMapper.to_subject(stream_prefix, subject)
 
     event_candidates =
       Enum.map(events, fn event_data ->
@@ -127,7 +127,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
       ) do
     client = client(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
-    subject = StreamMapper.to_subject(subject, stream_prefix)
+    subject = StreamMapper.to_subject(stream_prefix, subject)
 
     case EventSourcingDB.read_events(client, subject) do
       {:ok, events_stream} ->
@@ -179,7 +179,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   def subscribe_to(adapter_meta, stream_uuid, subscription_name, subscriber, start_from, opts) do
     event_store = server_name(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
-    subject = StreamMapper.to_subject(stream_uuid, stream_prefix)
+    subject = StreamMapper.to_subject(stream_prefix, stream_uuid)
 
     # implement here
   end

@@ -133,7 +133,7 @@ The extreme adapter is for the `kurrent` database
 
 - [Extreme Adapter Source
   Code](https://github.com/commanded/commanded-extreme-adapter/tree/master)
-- [Extreme Adapter Tests](https://github.com/exponentially/extreme/tree/master/test)
+- [Extreme Adapter Tests](https://github.com/commanded/commanded-extreme-adapter/tree/master/test/event_store)
 - [Extreme SDK](https://github.com/exponentially/extreme)
 
 ### Event Store Adapter
