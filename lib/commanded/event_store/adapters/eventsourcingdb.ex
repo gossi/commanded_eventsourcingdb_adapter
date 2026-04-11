@@ -4,12 +4,10 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   """
 
   alias Commanded.EventStore.EventData
-  alias Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore
   alias Commanded.EventStore.Adapters.EventSourcingDB.Config
   alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventMapper
-  alias Commanded.EventStore.Adapters.EventSourcingDB.ObserverProcess
-  alias Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionManager
+  alias Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor
 
   @behaviour Commanded.EventStore.Adapter
 
@@ -156,14 +154,25 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   def subscribe(adapter_meta, :all), do: subscribe(adapter_meta, :all)
 
   @impl Commanded.EventStore.Adapter
-  @spec subscribe(map(), String.t() | :all) ::
-          :ok | {:error, term()}
+  @spec subscribe(map(), String.t() | :all) :: :ok | {:error, term()}
   def subscribe(adapter_meta, stream_uuid) do
     client = client(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
-    subject = StreamMapper.to_subject(stream_uuid, stream_prefix)
+    event_store = server_name(adapter_meta)
 
-    # implement here
+    SubscriptionSupervisor.start_subscription(
+      event_store,
+      stream_uuid,
+      nil,
+      self(),
+      :origin,
+      client: client,
+      stream_prefix: stream_prefix
+    )
+    |> case do
+      {:ok, _pid} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @impl Commanded.EventStore.Adapter
@@ -174,14 +183,21 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           pid(),
           Commanded.EventStore.Adapter.start_from(),
           Keyword.t()
-        ) ::
-          {:ok, pid()} | {:error, :subscription_already_exists} | {:error, term()}
-  def subscribe_to(adapter_meta, stream_uuid, subscription_name, subscriber, start_from, opts) do
-    event_store = server_name(adapter_meta)
+        ) :: {:ok, pid()} | {:error, :subscription_already_exists} | {:error, term()}
+  def subscribe_to(adapter_meta, stream_uuid, subscription_name, subscriber, start_from, _opts) do
+    client = client(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
-    subject = StreamMapper.to_subject(stream_prefix, stream_uuid)
+    event_store = server_name(adapter_meta)
 
-    # implement here
+    SubscriptionSupervisor.start_subscription(
+      event_store,
+      stream_uuid,
+      subscription_name,
+      subscriber,
+      start_from,
+      client: client,
+      stream_prefix: stream_prefix
+    )
   end
 
   @impl Commanded.EventStore.Adapter
@@ -195,19 +211,14 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @spec unsubscribe(map(), pid()) :: :ok
   def unsubscribe(adapter_meta, subscription_pid) when is_pid(subscription_pid) do
     event_store = server_name(adapter_meta)
-
-    # implement here
+    SubscriptionSupervisor.stop_subscription(event_store, subscription_pid)
   end
-
-  def unsubscribe(_adapter_meta, _subscription), do: :ok
 
   @impl Commanded.EventStore.Adapter
   @spec delete_subscription(map(), String.t() | :all, String.t()) ::
           :ok | {:error, :subscription_not_found} | {:error, term()}
-  def delete_subscription(adapter_meta, stream_uuid, subscription_name) do
-    event_store = server_name(adapter_meta)
-
-    # implement here
+  def delete_subscription(_adapter_meta, _stream_uuid, _subscription_name) do
+    {:error, :not_supported}
   end
 
   @impl Commanded.EventStore.Adapter

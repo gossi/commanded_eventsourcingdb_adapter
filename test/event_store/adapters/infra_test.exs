@@ -14,14 +14,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.InfraTest do
 
     EventSourcingDB.append_to_stream(esdb_meta, "bank-account", 0, [build_event(1)])
 
-    assert_receive {:events, received_events}
-
-    # receive do
-    #   {:events, value} ->
-    #     IO.inspect(Enum.take(value, 1), label: "events received")
-    # end
-
-    # # IO.inspect(received_events, label: "received events")
+    assert_receive {:events, _received_events}
   end
 
   defp build_event(account_number) do
