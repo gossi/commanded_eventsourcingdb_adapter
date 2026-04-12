@@ -5,6 +5,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
 
   alias Commanded.EventStore.Adapters.EventSourcingDB.Config
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher
+  alias Commanded.EventStore.Adapters.EventSourcingDB.EventObserver
   alias Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor
 
   def start_link(config) do
@@ -16,24 +17,38 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
 
   @impl Supervisor
   def init(config) do
-    IO.inspect(config, label: "supervisor")
     client_config = Keyword.fetch!(config, :client)
     client = Config.client(client_config)
     stream_prefix = Keyword.get(config, :stream_prefix, "")
 
     event_store = Keyword.fetch!(config, :event_store)
     pubsub_name = Module.concat([event_store, PubSub])
+    observer_registry_name = Module.concat([event_store, ObserverRegistry])
     event_publisher_name = Module.concat([event_store, EventPublisher])
+    event_observer_name = Module.concat([event_store, EventObserver])
 
     children = [
       {Registry, keys: :duplicate, name: pubsub_name, partitions: 1},
+      {Registry, keys: :duplicate, name: observer_registry_name, partitions: 1},
       %{
         id: EventPublisher,
         start:
           {EventPublisher, :start_link,
            [
-             {client, event_store, pubsub_name, stream_prefix},
+             {client, event_store, pubsub_name, observer_registry_name, stream_prefix},
              [name: event_publisher_name]
+           ]},
+        restart: :permanent,
+        shutdown: 5000,
+        type: :worker
+      },
+      %{
+        id: EventObserver,
+        start:
+          {EventObserver, :start_link,
+           [
+             {client, event_store, observer_registry_name, stream_prefix},
+             [name: event_observer_name]
            ]},
         restart: :permanent,
         shutdown: 5000,

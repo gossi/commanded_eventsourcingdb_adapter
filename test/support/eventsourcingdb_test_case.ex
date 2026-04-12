@@ -20,8 +20,6 @@ defmodule Commanded.EventStore.EventSourcingDBTestCase do
       ]
     ]
 
-    IO.inspect(config, label: "setup_all, config")
-
     {:ok, child_spec, event_store_meta} =
       Commanded.EventStore.Adapters.EventSourcingDB.child_spec(EventSourcingDBApplication, config)
 

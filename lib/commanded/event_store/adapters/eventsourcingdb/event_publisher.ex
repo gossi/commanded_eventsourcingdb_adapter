@@ -1,36 +1,42 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
   @moduledoc """
-  GenServer that observes events from EventSourcingDB.
+  GenServer that receives events from EventObserver and distributes them
+  to subscribers via the Registry.
 
-  This process subscribes to ESDB's observe_events endpoint and forwards
-  received events to the subscriber process.
+  Responsibilities:
+  - Registers with ObserverRegistry for EventObserver to find
+  - Receives RecordedEvent from EventObserver
+  - Publishes to $all registry (all streams)
+  - Publishes to stream-specific registry
   """
 
   use GenServer
 
   alias Commanded.EventStore.RecordedEvent
-  alias EventSourcingDB.Event
-  alias EventSourcingDB.ObserveEventsOptions
-  alias Commanded.EventStore.Adapters.EventSourcingDB.EventMapper
-  alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
 
   defmodule State do
     @moduledoc false
     defstruct [
-      :client,
       :event_store,
       :pubsub,
-      :stream_prefix,
-      :observer_ref
+      :observer_registry,
+      :stream_prefix
     ]
   end
 
-  @spec start_link(Keyword.t()) :: GenServer.on_start()
-  def start_link({client, event_store, pubsub_name, stream_prefix}, opts \\ []) do
+  @spec start_link(
+          {EventSourcingDB.Client.t(), atom(), atom(), atom(), String.t()},
+          GenServer.options()
+        ) ::
+          GenServer.on_start()
+  def start_link(
+        {_client, event_store, pubsub_name, observer_registry_name, stream_prefix},
+        opts \\ []
+      ) do
     state = %State{
-      client: client,
       event_store: event_store,
       pubsub: pubsub_name,
+      observer_registry: observer_registry_name,
       stream_prefix: stream_prefix
     }
 
@@ -39,22 +45,12 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
 
   @impl true
   def init(%State{} = state) do
-    :ok = GenServer.cast(self(), :start_observer)
-
+    Registry.register(state.observer_registry, state.stream_prefix, self())
     {:ok, state}
   end
 
   @impl true
-  def handle_cast(:start_observer, state) do
-    {:ok, pid} = start_observer(state)
-
-    ref = Process.monitor(pid)
-
-    {:noreply, %{state | observer_ref: ref}}
-  end
-
-  @impl true
-  def handle_cast({:stream_event, %EventSourcingDB.Event{} = event}, state) do
+  def handle_cast({:stream_event, %RecordedEvent{} = event}, state) do
     publish_event(event, state)
     {:noreply, state}
   end
@@ -65,90 +61,17 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
   end
 
   @impl true
-  def handle_cast({:stream_error, reason}, state) do
-    IO.puts("observe_events failed: #{inspect(reason)}")
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %State{observer_ref: ref} = state) do
-    reconnect_delay = 1_000
-
-    Logger.warn("Subscription to EventStore is down. Will retry in #{reconnect_delay} ms.")
-
-    :timer.sleep(reconnect_delay)
-
-    :ok = GenServer.cast(self(), :start_observer)
-
-    {:noreply, state}
-  end
-
-  @impl true
   def handle_info(msg, state) do
-    IO.inspect(msg, label: "msg")
+    IO.inspect(msg, label: "EventPublisher msg")
     {:noreply, state}
   end
 
-  defp start_observer(state) do
-    opts = %ObserveEventsOptions{recursive: true}
-    parent_pid = self()
-
-    Task.start(fn ->
-      # Call observe_events HERE - in the Task process
-      case EventSourcingDB.observe_events(
-             state.client,
-             StreamMapper.to_subject(state.stream_prefix),
-             opts
-           ) do
-        {:ok, stream} ->
-          try do
-            stream
-            |> Stream.each(fn
-              %EventSourcingDB.Event{} = event ->
-                IO.inspect(
-                  String.starts_with?(
-                    event.subject,
-                    StreamMapper.to_subject(state.stream_prefix)
-                  ),
-                  label: "event starts with stream prefix"
-                )
-
-                if String.starts_with?(
-                     event.subject,
-                     StreamMapper.to_subject(state.stream_prefix)
-                   ) do
-                  GenServer.cast(parent_pid, {:stream_event, event})
-                  # send(parent_pid, {:stream_event, event})
-                end
-
-              other ->
-                IO.inspect(other, label: "non-event yielded")
-            end)
-            |> Stream.run()
-          rescue
-            e ->
-              IO.inspect(e, label: "observe events crashed")
-              GenServer.cast(parent_pid, {:stream_error, e})
-              # send(parent_pid, {:stream_error, e})
-          end
-
-        {:error, reason} ->
-          IO.inspect(reason.reason, label: "observe error")
-          send(parent_pid, {:stream_error, reason})
-      end
-    end)
-  end
-
-  defp publish_event(%Event{} = event, state) do
-    recorded_event = EventMapper.to_recorded_event(event, event.id, state.stream_prefix)
-
-    :ok = publish_to_all(recorded_event, state)
-    :ok = publish_to_stream(recorded_event, state)
+  defp publish_event(%RecordedEvent{} = event, state) do
+    :ok = publish_to_all(event, state)
+    :ok = publish_to_stream(event, state)
   end
 
   defp publish_to_all(%RecordedEvent{} = event, state) do
-    IO.inspect(event, label: "publish_to_all")
-
     Registry.dispatch(state.pubsub, "$all", fn entries ->
       for {pid, _} <- entries, do: send(pid, {:events, [event]})
     end)
