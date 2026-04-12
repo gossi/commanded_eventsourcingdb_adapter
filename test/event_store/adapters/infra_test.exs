@@ -9,12 +9,24 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.InfraTest do
     defstruct [:account_number, :initial_balance]
   end
 
-  test "hello", %{esdb_meta: esdb_meta} do
-    EventSourcingDB.subscribe(esdb_meta, "/")
+  test "subscribe", %{esdb_meta: esdb_meta} do
+    EventSourcingDB.subscribe(esdb_meta, "bank-account")
 
     EventSourcingDB.append_to_stream(esdb_meta, "bank-account", 0, [build_event(1)])
 
-    assert_receive {:events, _received_events}
+    assert_receive {:events, received_events}
+
+    # IO.inspect(received_events, label: "received events")
+  end
+
+  test "subscribe to all", %{esdb_meta: esdb_meta} do
+    EventSourcingDB.subscribe(esdb_meta, :all)
+
+    EventSourcingDB.append_to_stream(esdb_meta, "bank-account", 0, [build_event(1)])
+
+    assert_receive {:events, received_events}
+
+    # IO.inspect(received_events, label: "received events")
   end
 
   defp build_event(account_number) do

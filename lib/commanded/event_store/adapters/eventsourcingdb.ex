@@ -151,27 +151,18 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   end
 
   @impl Commanded.EventStore.Adapter
-  def subscribe(adapter_meta, :all), do: subscribe(adapter_meta, :all)
+  # apparently Registry can't take an atom as string, so we use the same special
+  # string as the extreme adapter
+  def subscribe(adapter_meta, :all), do: subscribe(adapter_meta, "$all")
 
   @impl Commanded.EventStore.Adapter
-  @spec subscribe(map(), String.t() | :all) :: :ok | {:error, term()}
+  @spec subscribe(map(), String.t()) :: :ok | {:error, term()}
   def subscribe(adapter_meta, stream_uuid) do
-    client = client(adapter_meta)
-    stream_prefix = stream_prefix(adapter_meta)
     event_store = server_name(adapter_meta)
+    pubsub_name = Module.concat([event_store, PubSub])
 
-    SubscriptionSupervisor.start_subscription(
-      event_store,
-      stream_uuid,
-      nil,
-      self(),
-      :origin,
-      client: client,
-      stream_prefix: stream_prefix
-    )
-    |> case do
-      {:ok, _pid} -> :ok
-      {:error, reason} -> {:error, reason}
+    with {:ok, _} <- Registry.register(pubsub_name, stream_uuid, []) do
+      :ok
     end
   end
 
