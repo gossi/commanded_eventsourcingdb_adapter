@@ -1,94 +1,75 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
-  @moduledoc """
-  GenServer that observes events from EventSourcingDB.
-
-  This process subscribes to ESDB's observe_events endpoint and forwards
-  received events to the subscriber process.
-  """
-
+  @moduledoc false
   use GenServer
 
-  alias EventSourcingDB.Event
-  alias EventSourcingDB.ObserveEventsOptions
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventMapper
   alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
 
-  defstruct [
-    :client,
-    :stream_prefix,
-    :stream_uuid,
-    :subject,
-    :subscriber,
-    :subscriber_ref,
-    :start_from,
-    :observer_active
-  ]
+  defmodule State do
+    @moduledoc false
+    defstruct [
+      :client,
+      :stream_prefix,
+      :subscription_name,
+      :subscriber,
+      :index,
+      :stream,
+      :start_from,
+      :subscriber_ref,
+      :observer_ref
+    ]
+  end
 
-  @type t :: %__MODULE__{
-          client: EventSourcingDB.Client.t(),
-          stream_prefix: String.t(),
-          stream_uuid: String.t(),
-          subject: String.t(),
-          subscriber: pid(),
-          subscriber_ref: reference(),
-          start_from: :origin | :current | non_neg_integer(),
-          observer_active: boolean()
-        }
+  def start_link(
+        client,
+        stream_prefix,
+        subscription_name,
+        subscriber,
+        stream,
+        start_from,
+        index,
+        opts \\ []
+      ) do
+    state = %State{
+      client: client,
+      stream_prefix: stream_prefix,
+      subscription_name: subscription_name,
+      subscriber: subscriber,
+      stream: stream,
+      start_from: start_from,
+      index: index,
+      subscriber_ref: Process.monitor(subscriber)
+    }
 
-  @spec start_link(Keyword.t()) :: GenServer.on_start()
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts)
+    GenServer.start_link(__MODULE__, state, opts)
   end
 
   @impl true
-  def init(opts) do
-    client = Keyword.fetch!(opts, :client)
-    stream_uuid = Keyword.fetch!(opts, :stream_uuid)
-    stream_prefix = Keyword.get(opts, :stream_prefix, "")
-    subscriber = Keyword.get(opts, :subscriber) || self()
-    start_from = Keyword.get(opts, :start_from, :origin)
-    subject = StreamMapper.to_subject(stream_prefix, stream_uuid)
+  def init(%State{} = state) do
+    send(state.subscriber, {:subscribed, self()})
 
-    state = %__MODULE__{
-      client: client,
-      stream_prefix: stream_prefix,
-      stream_uuid: stream_uuid,
-      subject: subject,
-      subscriber: subscriber,
-      subscriber_ref: Process.monitor(subscriber),
-      start_from: start_from,
-      observer_active: false
-    }
+    :ok = GenServer.cast(self(), :start_observer)
 
-    send(self(), :start_observer)
     {:ok, state}
   end
 
   @impl true
-  def handle_info(:start_observer, state) do
-    start_observer(state)
+  def handle_cast({:stream_event, %EventSourcingDB.Event{} = event}, state) do
+    recorded_event = EventMapper.to_recorded_event(event, event.id, state.stream_prefix)
+
+    send(state.subscriber, {:events, [recorded_event]})
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:stream_event, %EventSourcingDB.Event{} = event}, state) do
-    forward_event(event, state)
+  def handle_cast({:stream_event, _}, state) do
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:stream_event, _}, state) do
-    {:noreply, state}
-  end
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    IO.inspect({ref, pid, reason}, label: "terminated")
 
-  @impl true
-  def handle_info({:stream_error, reason}, state) do
-    IO.puts("observe_events failed: #{inspect(reason)}")
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     if ref == state.subscriber_ref do
       {:stop, reason, state}
     else
@@ -97,44 +78,55 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   end
 
   @impl true
-  def handle_info(msg, state) do
-    IO.inspect(msg, label: "msg")
+  def handle_info({:stream_error, reason}, state) do
     {:noreply, state}
   end
 
-  defp start_observer(state) do
-    opts = %ObserveEventsOptions{recursive: true}
-    parent_pid = self()
+  @impl true
+  def handle_cast(:start_observer, state) do
+    {:ok, pid} = start_observer(state)
 
-    result =
-      Task.start(fn ->
-        # Call observe_events HERE - in the Task process
-        case EventSourcingDB.observe_events(state.client, state.subject, opts) do
-          {:ok, stream} ->
-            try do
-              stream
-              |> Stream.each(fn
-                %EventSourcingDB.Event{} = event ->
-                  send(parent_pid, {:stream_event, event})
+    ref = Process.monitor(pid)
 
-                other ->
-                  IO.inspect(other, label: "non-event yielded")
-              end)
-              |> Stream.run()
-            rescue
-              e ->
-                IO.inspect(e, label: "observe events crashed")
-                send(parent_pid, {:stream_error, e})
-            end
-
-          {:error, reason} ->
-            send(parent_pid, {:stream_error, reason})
-        end
-      end)
+    {:noreply, %{state | observer_ref: ref}}
   end
 
-  defp forward_event(%Event{} = event, state) do
-    recorded_event = EventMapper.to_recorded_event(event, event.id, state.stream_prefix)
-    send(state.subscriber, {:events, [recorded_event]})
+  defp start_observer(state) do
+    opts = %EventSourcingDB.ObserveEventsOptions{recursive: true}
+    parent_pid = self()
+
+    Task.start(fn ->
+      subject = StreamMapper.to_subject(state.stream_prefix, state.stream)
+
+      case EventSourcingDB.observe_events(state.client, subject, opts) do
+        {:ok, stream} ->
+          try do
+            stream
+            |> Stream.each(fn
+              %EventSourcingDB.Event{} = event ->
+                if matches_stream_prefix?(event, state.stream_prefix) do
+                  GenServer.cast(parent_pid, {:stream_event, event})
+                end
+
+              other ->
+                IO.inspect(other, label: "non-event yielded")
+            end)
+            |> Stream.run()
+          rescue
+            e ->
+              IO.inspect(e, label: "observe events crashed")
+              GenServer.cast(parent_pid, {:stream_error, e})
+          end
+
+        {:error, reason} ->
+          IO.inspect(reason.reason, label: "observe error")
+          send(parent_pid, {:stream_error, reason})
+      end
+    end)
+  end
+
+  defp matches_stream_prefix?(%EventSourcingDB.Event{} = event, stream_prefix) do
+    subject_prefix = StreamMapper.to_subject(stream_prefix)
+    String.starts_with?(event.subject, subject_prefix)
   end
 end

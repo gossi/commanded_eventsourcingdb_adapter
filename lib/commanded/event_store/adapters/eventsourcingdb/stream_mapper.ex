@@ -9,6 +9,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper do
   end
 
   def to_subject(stream_prefix, :all), do: to_subject(stream_prefix)
+  def to_subject(stream_prefix, "$all"), do: to_subject(stream_prefix)
 
   def to_subject(stream_prefix, stream_uuid) do
     sanitize_subject("/" <> sanitize_stream_prefix(stream_prefix) <> "/" <> stream_uuid)

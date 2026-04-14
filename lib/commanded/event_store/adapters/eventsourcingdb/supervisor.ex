@@ -24,12 +24,15 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
     event_store = Keyword.fetch!(config, :event_store)
     pubsub_name = Module.concat([event_store, PubSub])
     observer_registry_name = Module.concat([event_store, ObserverRegistry])
+    subscription_registry_name = Module.concat([event_store, SubscriptionRegistry])
     event_publisher_name = Module.concat([event_store, EventPublisher])
     event_observer_name = Module.concat([event_store, EventObserver])
+    subscription_supervisor_name = Module.concat([event_store, SubscriptionSupervisor])
 
     children = [
       {Registry, keys: :duplicate, name: pubsub_name, partitions: 1},
       {Registry, keys: :duplicate, name: observer_registry_name, partitions: 1},
+      {Registry, keys: :unique, name: subscription_registry_name, partitions: 1},
       %{
         id: EventPublisher,
         start:
@@ -53,6 +56,21 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
         restart: :permanent,
         shutdown: 5000,
         type: :worker
+      },
+      %{
+        id: SubscriptionSupervisor,
+        start:
+          {SubscriptionSupervisor, :start_link,
+           [
+             [
+               client: client,
+               stream_prefix: stream_prefix
+             ],
+             [name: subscription_supervisor_name]
+           ]},
+        restart: :permanent,
+        shutdown: 5000,
+        type: :supervisor
       }
     ]
 

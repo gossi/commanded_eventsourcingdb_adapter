@@ -35,7 +35,9 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
       event_store: event_store,
       client: Config.client(esdb_config),
       stream_prefix: Keyword.get(config, :stream_prefix, ""),
-      source: Keyword.get(config, :source)
+      source: Keyword.get(config, :source),
+      observer_registry: Module.concat([event_store, ObserverRegistry]),
+      subscription_registry: Module.concat([event_store, SubscriptionRegistry])
     }
 
     {:ok, child_spec, adapter_meta}
@@ -169,26 +171,45 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @impl Commanded.EventStore.Adapter
   @spec subscribe_to(
           map(),
-          String.t() | :all,
+          :all,
           String.t(),
           pid(),
           Commanded.EventStore.Adapter.start_from(),
           Keyword.t()
         ) :: {:ok, pid()} | {:error, :subscription_already_exists} | {:error, term()}
-  def subscribe_to(adapter_meta, stream_uuid, subscription_name, subscriber, start_from, _opts) do
-    client = client(adapter_meta)
-    stream_prefix = stream_prefix(adapter_meta)
-    event_store = server_name(adapter_meta)
+  def subscribe_to(adapter_meta, :all, subscription_name, subscriber, start_from, opts) do
+    subscribe_to(adapter_meta, "$all", subscription_name, subscriber, start_from, opts)
+  end
 
-    SubscriptionSupervisor.start_subscription(
-      event_store,
-      stream_uuid,
-      subscription_name,
-      subscriber,
-      start_from,
-      client: client,
-      stream_prefix: stream_prefix
-    )
+  @impl Commanded.EventStore.Adapter
+  @spec subscribe_to(
+          map(),
+          String.t(),
+          String.t(),
+          pid(),
+          Commanded.EventStore.Adapter.start_from(),
+          Keyword.t()
+        ) :: {:ok, pid()} | {:error, :subscription_already_exists} | {:error, term()}
+  def subscribe_to(adapter_meta, stream, subscription_name, subscriber, start_from, opts) do
+    # client = client(adapter_meta)
+    # stream_prefix = stream_prefix(adapter_meta)
+    #
+    # observer_registry = observer_registry(adapter_meta)
+    event_store = server_name(adapter_meta)
+    subscription_registry = subscription_registry(adapter_meta)
+
+    case SubscriptionSupervisor.start_subscription(
+           event_store,
+           subscription_name,
+           subscriber,
+           stream,
+           start_from,
+           opts
+         ) do
+      {:ok, pid} ->
+        Registry.register(subscription_registry, {stream, subscription_name}, pid)
+        {:ok, pid}
+    end
   end
 
   @impl Commanded.EventStore.Adapter
@@ -208,8 +229,18 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @impl Commanded.EventStore.Adapter
   @spec delete_subscription(map(), String.t() | :all, String.t()) ::
           :ok | {:error, :subscription_not_found} | {:error, term()}
-  def delete_subscription(_adapter_meta, _stream_uuid, _subscription_name) do
-    {:error, :not_supported}
+  def delete_subscription(adapter_meta, stream_uuid, subscription_name) do
+    event_store = server_name(adapter_meta)
+
+    #   case Registry.lookup(subscription_registry(), stream) do
+    #     [{pid, _}] ->
+    #       DynamicSupervisor.terminate_child(self(), pid)
+    #       :ok
+
+    #     [] ->
+    #       {:error, :subscription_not_found}
+    #   end
+    # SubscriptionSupervisor.delete_subscription(event_store, stream_uuid, subscription_name)
   end
 
   @impl Commanded.EventStore.Adapter
@@ -241,6 +272,16 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
 
   defp stream_prefix(adapter_meta) do
     Map.get(adapter_meta, :stream_prefix, "")
+  end
+
+  defp observer_registry(adapter_meta) do
+    Map.fetch!(adapter_meta, :observer_registry)
+  end
+
+  defp subscription_registry(adapter_meta) do
+    event_store = server_name(adapter_meta)
+
+    Module.concat([event_store, SubscriptionRegistry])
   end
 
   defp source(adapter_meta) do
@@ -287,27 +328,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     end
   end
 
-  defp handle_write_error(%EventSourcingDB.Errors.ApiError{reason: reason}, 0) do
-    case reason do
-      "state conflict: precondition failed\n" -> {:error, :wrong_expected_version}
-      "state conflict: subject not found\n" -> {:error, :stream_not_found}
-      _ -> {:error, reason}
-    end
-  end
-
   defp handle_write_error(%EventSourcingDB.Errors.ApiError{reason: reason}, expected_version)
        when is_integer(expected_version) do
     case reason do
       "state conflict: precondition failed\n" -> {:error, :wrong_expected_version}
       "state conflict: subject not found\n" -> {:error, :wrong_expected_version}
-      _ -> {:error, reason}
-    end
-  end
-
-  defp handle_write_error(%EventSourcingDB.Errors.ApiError{reason: reason}, _expected_version) do
-    case reason do
-      "state conflict: precondition failed\n" -> {:error, :wrong_expected_version}
-      "state conflict: subject not found\n" -> {:error, :stream_not_found}
       _ -> {:error, reason}
     end
   end
