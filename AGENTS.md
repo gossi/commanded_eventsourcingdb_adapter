@@ -135,6 +135,7 @@ The extreme adapter is for the `kurrent` database
   Code](https://github.com/commanded/commanded-extreme-adapter/tree/master)
 - [Extreme Adapter Tests](https://github.com/commanded/commanded-extreme-adapter/tree/master/test/event_store)
 - [Extreme SDK](https://github.com/exponentially/extreme)
+- [Kurrent Docs](https://docs.kurrent.io/server/latest/)
 
 ### Event Store Adapter
 
