@@ -7,17 +7,22 @@ consulted: []
 informed: []
 ---
 
-# Define stream_version semantics for ESDB adapter
+# Define `stream_version` semantics for ESDB adapter
+
+Related ADRs:
+
+- [0001 - Event Semantics](./0001-event-semantics.md)
+- [0002 - Stream Semantics](./0002-stream-semantics.md)
 
 ## Context and Problem Statement
 
-EventSourcingDB (ESDB) differs from EventStoreDB in how it numbers events. ESDB uses a global counter per subject (`event.id`), while Commanded expects `stream_version` to be a per-stream sequential number (1, 2, 3...). Additionally, Commanded tests verify different behaviors for single stream vs `:all` subscriptions, and transient vs persistent subscriptions. This ADR documents the semantic meaning of stream_version in our ESDB adapter.
+EventSourcingDB (ESDB) differs from EventStoreDB in how it numbers events. ESDB uses a global counter per subject (`event.id`), while Commanded expects `stream_version` to be a per-stream sequential number (1, 2, 3...). The stream_id is derived from the ESDB subject - see [0002 - Stream Semantics](./0002-stream-semantics.md). Additionally, Commanded tests verify different behaviors for single stream vs `:all` subscriptions, and transient vs persistent subscriptions. This ADR documents the semantic meaning of stream_version in our ESDB adapter.
 
 ## Decision Drivers
 
 - Commanded's subscription_test_case.ex verifies that stream_version increments per stream independently
 - For single stream subscriptions: stream_version resets at 1 for each new stream
-- For :all subscriptions: each stream tracks its own stream_version independently
+- For `:all` subscriptions: each stream tracks its own stream_version independently - see [0002 - Stream Semantics](./0002-stream-semantics.md)
 - Persistent subscriptions checkpoint stream_version for resumption
 - Transient subscriptions have no checkpoint but still receive stream_version
 - delete_subscription resets the checkpoint allowing fresh start from :origin
@@ -52,17 +57,25 @@ Chosen option: "Compute stream_version internally in adapter modules", because E
 
 | Stream Scope | What Gets Tracked | Starting Value |
 |-------------|-----------------|---------------|
-| **Single Stream** | stream_version | 1 per stream |
+| **Single Stream** | stream_version per stream | 1 per stream |
 | **:all Streams** | stream_version per stream + event_number global | 1 per stream / 1 global |
 
-### Function Effects on stream_version
+### Function Effects on Storage
 
-| Function | stream_version Effect | event_number Effect |
-|----------|---------------------|-------------------|
-| subscribe/2 | Tracks in-memory, dies with process | Tracks in-memory, dies with process |
-| subscribe_to/6 | Tracks in-memory + checkpoint | Used for resume on :all |
-| ack | (persistent) In-memory tracked, not stored | Stored as checkpoint |
-| delete_subscription | N/A | RESETS to 1 |
+There are three storage types for stream_version:
+
+1. **stream_versions (transient)**: In-memory map tracked via Registry (for `subscribe/2`)
+2. **stream_versions (persistent)**: In-memory map in Subscription GenServer (for `subscribe_to/6`)
+3. **checkpoint (persistent)**: CheckpointStore for resumption
+
+| Function | stream_versions (transient) | stream_versions (persistent) | checkpoint (persistent) |
+|----------|-----------------------------|-----------------------------|-------------------------|
+| `append_to_stream/5` | Increments per stream for all active Registry subscribers | Increments per stream in all active Subscription GenServers | N/A (checkpoint updated on ack, not write) |
+| `subscribe/2` | Creates via Registry, tracks in-memory | N/A (no GenServer) | None (transient) |
+| `subscribe_to/6` | N/A | Initializes based on start_from:<br>- `:origin` → empty<br>- `:current` → from checkpoint<br>- integer → from position | None (until first ack) |
+| `ack/3` | N/A (transient doesn't ack) | Increments per stream in GenServer | Stores event_number |
+| `delete_subscription/3` | N/A | N/A (GenServer terminates) | Deletes checkpoint |
+| `unsubscribe/2` | N/A (Registry entry removed) | N/A (GenServer terminates) | N/A (not deleted, persists) |
 
 ## Consequences
 
@@ -79,7 +92,7 @@ Chosen option: "Compute stream_version internally in adapter modules", because E
 
 ### Neutral
 
-- ESBD's global event.id is used as event_number without additional storage
+- ESDB's global event.id is used as event_number without additional storage - see [0001 - Event Semantics](./0001-event-semantics.md)
 
 ## More Information
 
@@ -94,10 +107,19 @@ stream1: event#1 → stream_version: 1, event_number: 1
 stream2: event#1 → stream_version: 1, event_number: 3  ← stream_version resets!
          event#2 → stream_version: 2, event_number: 4
 
-After delete_subscription(:all, "sub"):
-──────────────────────────────────────��──────────
-Back to receiving from event_number: 1 (global reset)
+After delete_subscription(:all, "sub") + subscribe with :origin:
+───────────────────────────────────────────────────────────────────────────
+Subscription starts reading from beginning → receives event_number 1 again
+(Note: stream_version per stream still resets independently)
 ```
+
+### Key Correction
+
+**delete_subscription does NOT reset the global counter.**
+
+- ESDB's global event_number counter is incremental (1, 2, 3...)
+- Delete only removes the **checkpoint**
+- Next subscription with `:origin` starts reading from the first event in ESDB (event #1)
 
 ### Implementation Notes
 
@@ -137,6 +159,7 @@ Subscriber receives event
 ```
 
 The adapter receives the entire `RecordedEvent` struct on ack:
+
 ```elixir
 %RecordedEvent{
   event_number: 1,    # global - USED FOR CHECKPOINT
