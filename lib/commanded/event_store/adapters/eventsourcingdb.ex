@@ -198,22 +198,17 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     event_store = server_name(adapter_meta)
     subscription_registry = subscription_registry(adapter_meta)
 
-    start_result =
-      SubscriptionSupervisor.start_subscription(
-        event_store,
-        stream,
-        subscription_name,
-        subscriber,
-        start_from,
-        opts
-      )
-
-    IO.inspect(start_result, label: "start result from subscribe_to()")
-
-    case start_result do
-      {:ok, pid} ->
-        Registry.register(subscription_registry, {stream, subscription_name}, pid)
-        {:ok, pid}
+    with {:ok, pid} <-
+           SubscriptionSupervisor.start_subscription(
+             event_store,
+             stream,
+             subscription_name,
+             subscriber,
+             start_from,
+             opts
+           ) do
+      Registry.register(subscription_registry, {stream, subscription_name}, pid)
+      {:ok, pid}
     end
   end
 

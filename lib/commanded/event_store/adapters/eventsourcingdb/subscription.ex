@@ -49,8 +49,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
       {:global,
        {event_store, __MODULE__, stream, subscription_name, Keyword.fetch!(opts, :index)}}
 
-    IO.inspect(name, label: "subscription name")
-
     GenServer.start_link(__MODULE__, state, name: name)
   end
 

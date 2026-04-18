@@ -48,11 +48,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
         index
       )
 
-    start_result = DynamicSupervisor.start_child(name, spec)
-
-    IO.inspect(start_result, label: "start result")
-
-    case start_result do
+    case DynamicSupervisor.start_child(name, spec) do
       {:ok, pid} ->
         {:ok, pid}
 
@@ -60,13 +56,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
         {:ok, pid}
 
       {:error, {:already_started, _pid}} ->
-        IO.inspect(Keyword.get(opts, :subscriber_max_count),
-          label: "already started, max sub count"
-        )
-
         case Keyword.get(opts, :subscriber_max_count) do
           nil ->
-            IO.puts("already exists")
             {:error, :subscription_already_exists}
 
           subscriber_max_count ->
