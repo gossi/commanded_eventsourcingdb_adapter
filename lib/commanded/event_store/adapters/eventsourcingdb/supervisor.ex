@@ -5,8 +5,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
 
   alias Commanded.EventStore.Adapters.EventSourcingDB.Config
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher
-  alias Commanded.EventStore.Adapters.EventSourcingDB.EventObserver
   alias Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor
+  alias Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore
 
   def start_link(config) do
     event_store = Keyword.fetch!(config, :event_store)
@@ -21,12 +21,13 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
     client = Config.client(client_config)
     stream_prefix = Keyword.get(config, :stream_prefix, "")
 
+    CheckpointStore.init()
+
     event_store = Keyword.fetch!(config, :event_store)
     pubsub_name = Module.concat([event_store, PubSub])
     observer_registry_name = Module.concat([event_store, ObserverRegistry])
     subscription_registry_name = Module.concat([event_store, SubscriptionRegistry])
     event_publisher_name = Module.concat([event_store, EventPublisher])
-    event_observer_name = Module.concat([event_store, EventObserver])
     subscription_supervisor_name = Module.concat([event_store, SubscriptionSupervisor])
 
     children = [
@@ -40,18 +41,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Supervisor do
            [
              {client, event_store, pubsub_name, observer_registry_name, stream_prefix},
              [name: event_publisher_name]
-           ]},
-        restart: :permanent,
-        shutdown: 5000,
-        type: :worker
-      },
-      %{
-        id: EventObserver,
-        start:
-          {EventObserver, :start_link,
-           [
-             {client, event_store, observer_registry_name, stream_prefix},
-             [name: event_observer_name]
            ]},
         restart: :permanent,
         shutdown: 5000,

@@ -11,6 +11,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
   use DynamicSupervisor
 
   alias Commanded.EventStore.Adapters.EventSourcingDB.Subscription
+  alias Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore
 
   @spec start_link(Keyword.t(), GenServer.options()) :: GenServer.on_start()
   def start_link(config, opts \\ []) do
@@ -25,20 +26,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
     DynamicSupervisor.init(strategy: :one_for_one, extra_arguments: [client, stream_prefix])
   end
 
-  # @spec start_subscription(
-  #         term(),
-  #         String.t() | :all,
-  #         String.t(),
-  #         pid(),
-  #         :origin | :current | non_neg_integer(),
-  #         Keyword.t(),
-  #         non_neg_integer()
-  #       ) :: {:ok, pid()} | {:error, :subscription_already_exists | term()}
   def start_subscription(
         event_store,
+        stream,
         subscription_name,
         subscriber,
-        stream,
         start_from,
         opts,
         index \\ 0
@@ -47,14 +39,20 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
 
     spec =
       subscription_spec(
+        event_store,
+        stream,
         subscription_name,
         subscriber,
-        stream,
         start_from,
+        opts,
         index
       )
 
-    case DynamicSupervisor.start_child(name, spec) do
+    start_result = DynamicSupervisor.start_child(name, spec)
+
+    IO.inspect(start_result, label: "start result")
+
+    case start_result do
       {:ok, pid} ->
         {:ok, pid}
 
@@ -62,17 +60,22 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
         {:ok, pid}
 
       {:error, {:already_started, _pid}} ->
+        IO.inspect(Keyword.get(opts, :subscriber_max_count),
+          label: "already started, max sub count"
+        )
+
         case Keyword.get(opts, :subscriber_max_count) do
           nil ->
+            IO.puts("already exists")
             {:error, :subscription_already_exists}
 
           subscriber_max_count ->
             if index < subscriber_max_count - 1 do
               start_subscription(
                 event_store,
+                stream,
                 subscription_name,
                 subscriber,
-                stream,
                 start_from,
                 opts,
                 index + 1
@@ -94,15 +97,30 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
     :ok
   end
 
-  defp subscription_spec(subscription_name, subscriber, stream, start_from, index) do
+  @spec delete_subscription(term(), String.t() | :all, String.t()) :: :ok
+  def delete_subscription(_event_store, _stream, subscription_name) do
+    CheckpointStore.delete(subscription_name)
+    :ok
+  end
+
+  defp subscription_spec(
+         event_store,
+         stream,
+         subscription_name,
+         subscriber,
+         start_from,
+         opts,
+         index
+       ) do
     # extra args get prepended from DynamicSupervisor, see #init
     # extra_arguments = [client, stream_prefix]
     start_args = [
+      event_store,
+      stream,
       subscription_name,
       subscriber,
-      stream,
       start_from,
-      index
+      Keyword.put(opts, :index, index)
     ]
 
     %{
@@ -112,21 +130,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
       shutdown: 5_000,
       type: :worker
     }
-  end
-
-  defp name(event_store), do: Module.concat([event_store, __MODULE__])
-
-  defp subscription_registry do
-    __MODULE__
-    |> Process.whereis()
-    |> case do
-      nil ->
-        nil
-
-      pid ->
-        %{subscription_registry: reg} = :sys.get_state(pid)
-        reg
-    end
   end
 
   defp name(event_store), do: Module.concat([event_store, __MODULE__])

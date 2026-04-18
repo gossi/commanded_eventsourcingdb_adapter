@@ -4,49 +4,61 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
 
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventMapper
   alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
+  alias Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore
+  alias Commanded.EventStore.RecordedEvent
 
   defmodule State do
     @moduledoc false
     defstruct [
       :client,
+      :event_store,
       :stream_prefix,
+      :stream,
       :subscription_name,
       :subscriber,
-      :index,
-      :stream,
       :start_from,
       :subscriber_ref,
-      :observer_ref
+      :observer_ref,
+      stream_versions: %{},
+      last_acked_event_number: 0
     ]
   end
 
   def start_link(
         client,
         stream_prefix,
+        event_store,
+        stream,
         subscription_name,
         subscriber,
-        stream,
         start_from,
-        index,
-        opts \\ []
+        opts
       ) do
     state = %State{
       client: client,
+      event_store: event_store,
       stream_prefix: stream_prefix,
+      stream: stream,
       subscription_name: subscription_name,
       subscriber: subscriber,
-      stream: stream,
       start_from: start_from,
-      index: index,
       subscriber_ref: Process.monitor(subscriber)
     }
 
-    GenServer.start_link(__MODULE__, state, opts)
+    name =
+      {:global,
+       {event_store, __MODULE__, stream, subscription_name, Keyword.fetch!(opts, :index)}}
+
+    IO.inspect(name, label: "subscription name")
+
+    GenServer.start_link(__MODULE__, state, name: name)
   end
 
   @impl true
   def init(%State{} = state) do
     send(state.subscriber, {:subscribed, self()})
+
+    state = maybe_initialize_from_checkpoint(state)
 
     :ok = GenServer.cast(self(), :start_observer)
 
@@ -55,15 +67,27 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
 
   @impl true
   def handle_cast({:stream_event, %EventSourcingDB.Event{} = event}, state) do
-    recorded_event = EventMapper.to_recorded_event(event, event.id, state.stream_prefix)
+    stream_id = StreamMapper.get_stream_id(event.subject, state.stream_prefix)
+
+    current_version = Map.get(state.stream_versions, stream_id, 0)
+    new_version = current_version + 1
+
+    recorded_event = EventMapper.to_recorded_event(event, new_version, state.stream_prefix)
 
     send(state.subscriber, {:events, [recorded_event]})
-    {:noreply, state}
+
+    {:noreply, %{state | stream_versions: Map.put(state.stream_versions, stream_id, new_version)}}
   end
 
   @impl true
   def handle_cast({:stream_event, _}, state) do
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:ack, %RecordedEvent{} = event}, state) do
+    CheckpointStore.put(state.subscription_name, event.event_number)
+    {:noreply, %{state | last_acked_event_number: event.event_number}}
   end
 
   @impl true
@@ -78,7 +102,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   end
 
   @impl true
-  def handle_info({:stream_error, reason}, state) do
+  def handle_info({:stream_error, _reason}, state) do
     {:noreply, state}
   end
 
@@ -92,14 +116,16 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   end
 
   defp start_observer(state) do
-    opts = %EventSourcingDB.ObserveEventsOptions{recursive: true}
     parent_pid = self()
 
     Task.start(fn ->
+      opts = observe_options(state)
       subject = StreamMapper.to_subject(state.stream_prefix, state.stream)
 
       case EventSourcingDB.observe_events(state.client, subject, opts) do
         {:ok, stream} ->
+          # DO NOT CHANGE the try-rescue block, this is vital for observing the
+          # stream around ESDB
           try do
             stream
             |> Stream.each(fn
@@ -121,6 +147,18 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
         {:error, reason} ->
           IO.inspect(reason.reason, label: "observe error")
           send(parent_pid, {:stream_error, reason})
+
+          # stream
+          # |> Stream.each(fn
+          #   %EventSourcingDB.Event{} = event ->
+          #     if matches_stream_prefix?(event, state.stream_prefix) do
+          #       GenServer.cast(parent_pid, {:stream_event, event})
+          #     end
+          # end)
+          # |> Stream.run()
+
+          # {:error, _reason} ->
+          #   :skip
       end
     end)
   end
@@ -128,5 +166,109 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   defp matches_stream_prefix?(%EventSourcingDB.Event{} = event, stream_prefix) do
     subject_prefix = StreamMapper.to_subject(stream_prefix)
     String.starts_with?(event.subject, subject_prefix)
+  end
+
+  defp maybe_initialize_from_checkpoint(%State{} = state) do
+    case state.start_from do
+      :origin ->
+        CheckpointStore.delete(state.subscription_name)
+        %{state | stream_versions: %{}, last_acked_event_number: 0}
+
+      :current ->
+        case CheckpointStore.get(state.subscription_name) do
+          {:ok, last_seen_event_number} ->
+            %{
+              state
+              | stream_versions: %{state.stream => last_seen_event_number},
+                last_acked_event_number: last_seen_event_number
+            }
+
+          :error ->
+            %{state | stream_versions: %{}, last_acked_event_number: 0}
+        end
+
+      _ when is_integer(state.start_from) ->
+        %{
+          state
+          | stream_versions: %{state.stream => state.start_from},
+            last_acked_event_number: state.start_from
+        }
+    end
+  end
+
+  # Pattern match to build observe options based on start_from position
+  defp observe_options(%State{start_from: :origin}) do
+    %EventSourcingDB.ObserveEventsOptions{recursive: false}
+  end
+
+  defp observe_options(
+         %State{
+           start_from: :current,
+           client: client
+         } = state
+       ) do
+    event_number = state.last_acked_event_number
+
+    case event_number_to_event_id(client, event_number) do
+      {:ok, event_id} ->
+        %EventSourcingDB.ObserveEventsOptions{
+          recursive: false,
+          lower_bound: %EventSourcingDB.BoundOptions{
+            type: :exclusive,
+            id: event_id
+          }
+        }
+
+      :error ->
+        %EventSourcingDB.ObserveEventsOptions{recursive: false}
+    end
+  end
+
+  defp observe_options(
+         %State{
+           start_from: start_from,
+           client: client
+         } = state
+       )
+       when is_integer(start_from) do
+    # For integer start_from, we use the provided value
+    case event_number_to_event_id(client, start_from) do
+      {:ok, event_id} ->
+        %EventSourcingDB.ObserveEventsOptions{
+          recursive: false,
+          lower_bound: %EventSourcingDB.BoundOptions{
+            type: :exclusive,
+            id: event_id
+          }
+        }
+
+      :error ->
+        %EventSourcingDB.ObserveEventsOptions{recursive: false}
+    end
+  end
+
+  # Convert global event_number to ESDB event_id
+  # event_number is 1-based, so offset = event_number (skip all events up to that point)
+  defp event_number_to_event_id(_client, 0), do: :error
+
+  defp event_number_to_event_id(client, event_number) when event_number > 0 do
+    query = """
+    FROM e IN events
+    ORDER BY e.id ASC
+    LIMIT 1
+    OFFSET #{event_number}
+    SELECT e.id
+    """
+
+    case EventSourcingDB.run_eventql_query(client, query) do
+      {:ok, results} ->
+        case Enum.to_list(results) do
+          [%{"id" => event_id}] -> {:ok, event_id}
+          _ -> :error
+        end
+
+      {:error, _reason} ->
+        :error
+    end
   end
 end

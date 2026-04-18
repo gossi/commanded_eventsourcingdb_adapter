@@ -142,8 +142,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           events
           |> Stream.with_index(1)
           |> Stream.filter(fn {_event, index} -> index >= max(start_version, 1) end)
-          |> Stream.map(fn {event, event_number} ->
-            EventMapper.to_recorded_event(event, event_number, stream_prefix)
+          |> Stream.map(fn {event, stream_version} ->
+            EventMapper.to_recorded_event(event, stream_version, stream_prefix)
           end)
         end
 
@@ -198,14 +198,19 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     event_store = server_name(adapter_meta)
     subscription_registry = subscription_registry(adapter_meta)
 
-    case SubscriptionSupervisor.start_subscription(
-           event_store,
-           subscription_name,
-           subscriber,
-           stream,
-           start_from,
-           opts
-         ) do
+    start_result =
+      SubscriptionSupervisor.start_subscription(
+        event_store,
+        stream,
+        subscription_name,
+        subscriber,
+        start_from,
+        opts
+      )
+
+    IO.inspect(start_result, label: "start result from subscribe_to()")
+
+    case start_result do
       {:ok, pid} ->
         Registry.register(subscription_registry, {stream, subscription_name}, pid)
         {:ok, pid}
@@ -231,16 +236,17 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           :ok | {:error, :subscription_not_found} | {:error, term()}
   def delete_subscription(adapter_meta, stream_uuid, subscription_name) do
     event_store = server_name(adapter_meta)
+    subscription_registry = subscription_registry(adapter_meta)
 
-    #   case Registry.lookup(subscription_registry(), stream) do
-    #     [{pid, _}] ->
-    #       DynamicSupervisor.terminate_child(self(), pid)
-    #       :ok
+    case Registry.lookup(subscription_registry, {stream_uuid, subscription_name}) do
+      [{pid, _}] ->
+        SubscriptionSupervisor.stop_subscription(event_store, pid)
+        SubscriptionSupervisor.delete_subscription(event_store, stream_uuid, subscription_name)
+        :ok
 
-    #     [] ->
-    #       {:error, :subscription_not_found}
-    #   end
-    # SubscriptionSupervisor.delete_subscription(event_store, stream_uuid, subscription_name)
+      [] ->
+        {:error, :subscription_not_found}
+    end
   end
 
   @impl Commanded.EventStore.Adapter

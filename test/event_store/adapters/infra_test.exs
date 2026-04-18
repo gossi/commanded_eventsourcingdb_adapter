@@ -9,27 +9,27 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.InfraTest do
     defstruct [:account_number, :initial_balance]
   end
 
-  # describe "transient subscription" do
-  #   test "subscribe to stream", %{esdb_meta: esdb_meta} do
-  #     EventSourcingDB.subscribe(esdb_meta, "bank-account")
+  describe "transient subscription" do
+    test "subscribe to stream", %{esdb_meta: esdb_meta} do
+      EventSourcingDB.subscribe(esdb_meta, "bank-account")
 
-  #     EventSourcingDB.append_to_stream(esdb_meta, "bank-account", 0, [build_event(1)])
+      EventSourcingDB.append_to_stream(esdb_meta, "bank-account", 0, [build_event(1)])
 
-  #     assert_receive {:events, received_events}
+      assert_receive {:events, _received_events}
 
-  #     # IO.inspect(received_events, label: "received events")
-  #   end
+      # IO.inspect(received_events, label: "received events")
+    end
 
-  #   test "subscribe to all", %{esdb_meta: esdb_meta} do
-  #     EventSourcingDB.subscribe(esdb_meta, :all)
+    test "subscribe to all", %{esdb_meta: esdb_meta} do
+      EventSourcingDB.subscribe(esdb_meta, :all)
 
-  #     EventSourcingDB.append_to_stream(esdb_meta, "bank-account", 0, [build_event(1)])
+      EventSourcingDB.append_to_stream(esdb_meta, "bank-account", 0, [build_event(1)])
 
-  #     assert_receive {:events, received_events}
+      assert_receive {:events, _received_events}
 
-  #     # IO.inspect(received_events, label: "received events")
-  #   end
-  # end
+      # IO.inspect(received_events, label: "received events")
+    end
+  end
 
   describe "persistent subscription to a single stream" do
     test "should receive `:subscribed` message once subscribed", %{esdb_meta: esdb_meta} do
@@ -66,7 +66,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.InfraTest do
     end
 
     test "should not receive events appended to another stream", %{esdb_meta: esdb_meta} do
-      {:ok, subscription} =
+      {:ok, _subscription} =
         EventSourcingDB.subscribe_to(esdb_meta, "stream1", "subscriber", self(), :origin, [])
 
       :ok = EventSourcingDB.append_to_stream(esdb_meta, "stream1", 0, build_events(1))
