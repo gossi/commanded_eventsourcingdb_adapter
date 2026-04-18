@@ -75,17 +75,13 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     if new_subscriber in existing_pids do
       {:reply, {:error, :subscription_already_exists}, state}
     else
-      if state.concurrency_limit == 1 do
-        {:reply, {:error, :subscription_already_exists}, state}
+      if length(state.subscribers) >= state.concurrency_limit do
+        {:reply, {:error, :too_many_subscribers}, state}
       else
-        if length(state.subscribers) >= state.concurrency_limit do
-          {:reply, {:error, :too_many_subscribers}, state}
-        else
-          ref = Process.monitor(new_subscriber)
-          new_subscribers = [{new_subscriber, ref} | state.subscribers]
-          send(new_subscriber, {:subscribed, self()})
-          {:reply, {:ok, self()}, %{state | subscribers: new_subscribers}}
-        end
+        ref = Process.monitor(new_subscriber)
+        new_subscribers = [{new_subscriber, ref} | state.subscribers]
+        send(new_subscriber, {:subscribed, self()})
+        {:reply, {:ok, self()}, %{state | subscribers: new_subscribers}}
       end
     end
   end

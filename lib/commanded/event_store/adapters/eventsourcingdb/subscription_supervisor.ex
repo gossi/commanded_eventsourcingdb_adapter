@@ -48,7 +48,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
         {:ok, pid}
 
       {:error, {:already_started, existing_pid}} ->
-        GenServer.call(existing_pid, {:add_subscriber, subscriber})
+        if concurrency_limit == 1 do
+          {:error, :subscription_already_exists}
+        else
+          GenServer.call(existing_pid, {:add_subscriber, subscriber})
+        end
 
       reply ->
         reply
