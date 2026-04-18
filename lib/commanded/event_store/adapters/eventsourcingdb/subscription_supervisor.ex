@@ -1,13 +1,5 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor do
-  @moduledoc """
-  DynamicSupervisor for managing subscription processes.
-
-  Each subscription is an inline child GenServer that:
-  - Registers with ObserverRegistry to receive events
-  - Registers with SubscriptionRegistry for delete lookup
-  - Forwards events to the subscriber
-  """
-
+  @moduledoc false
   use DynamicSupervisor
 
   alias Commanded.EventStore.Adapters.EventSourcingDB.Subscription

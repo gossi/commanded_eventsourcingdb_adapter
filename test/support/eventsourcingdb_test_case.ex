@@ -34,9 +34,7 @@ defmodule Commanded.EventStore.EventSourcingDBTestCase do
     end)
 
     %{
-      event_store: Commanded.EventStore.Adapters.EventSourcingDB,
       event_store_meta: event_store_meta,
-      esdb_meta: event_store_meta,
       container: container,
       client: client
     }
