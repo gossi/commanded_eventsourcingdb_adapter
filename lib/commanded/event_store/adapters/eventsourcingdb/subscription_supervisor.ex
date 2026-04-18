@@ -24,10 +24,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
         subscription_name,
         subscriber,
         start_from,
-        opts,
-        index \\ 0
+        opts
       ) do
     name = name(event_store)
+
+    concurrency_limit = Keyword.get(opts, :concurrency_limit, 1)
 
     spec =
       subscription_spec(
@@ -36,8 +37,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
         subscription_name,
         subscriber,
         start_from,
-        opts,
-        index
+        concurrency_limit: concurrency_limit
       )
 
     case DynamicSupervisor.start_child(name, spec) do
@@ -47,26 +47,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
       {:ok, pid, _info} ->
         {:ok, pid}
 
-      {:error, {:already_started, _pid}} ->
-        case Keyword.get(opts, :subscriber_max_count) do
-          nil ->
-            {:error, :subscription_already_exists}
-
-          subscriber_max_count ->
-            if index < subscriber_max_count - 1 do
-              start_subscription(
-                event_store,
-                stream,
-                subscription_name,
-                subscriber,
-                start_from,
-                opts,
-                index + 1
-              )
-            else
-              {:error, :too_many_subscribers}
-            end
-        end
+      {:error, {:already_started, existing_pid}} ->
+        GenServer.call(existing_pid, {:add_subscriber, subscriber})
 
       reply ->
         reply
@@ -92,22 +74,19 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
          subscription_name,
          subscriber,
          start_from,
-         opts,
-         index
+         opts
        ) do
-    # extra args get prepended from DynamicSupervisor, see #init
-    # extra_arguments = [client, stream_prefix]
     start_args = [
       event_store,
       stream,
       subscription_name,
       subscriber,
       start_from,
-      Keyword.put(opts, :index, index)
+      opts
     ]
 
     %{
-      id: {Subscription, stream, subscription_name, index},
+      id: {Subscription, stream, subscription_name},
       start: {Subscription, :start_link, start_args},
       restart: :temporary,
       shutdown: 5_000,

@@ -15,10 +15,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
       :stream_prefix,
       :stream,
       :subscription_name,
-      :subscriber,
       :start_from,
-      :subscriber_ref,
       :observer_ref,
+      :concurrency_limit,
+      :subscribers,
+      :subscriber_index,
       stream_versions: %{},
       last_acked_event_number: 0
     ]
@@ -34,33 +35,64 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
         start_from,
         opts
       ) do
+    concurrency_limit = Keyword.get(opts, :concurrency_limit, 1)
+
     state = %State{
       client: client,
       event_store: event_store,
       stream_prefix: stream_prefix,
       stream: stream,
       subscription_name: subscription_name,
-      subscriber: subscriber,
       start_from: start_from,
-      subscriber_ref: Process.monitor(subscriber)
+      concurrency_limit: concurrency_limit,
+      subscribers: [{subscriber, Process.monitor(subscriber)}],
+      subscriber_index: 0
     }
 
     name =
-      {:global,
-       {event_store, __MODULE__, stream, subscription_name, Keyword.fetch!(opts, :index)}}
+      {:global, {event_store, __MODULE__, stream, subscription_name}}
 
     GenServer.start_link(__MODULE__, state, name: name)
   end
 
   @impl true
   def init(%State{} = state) do
-    send(state.subscriber, {:subscribed, self()})
+    for {subscriber, _ref} <- state.subscribers do
+      send(subscriber, {:subscribed, self()})
+    end
 
     state = maybe_initialize_from_checkpoint(state)
 
     :ok = GenServer.cast(self(), :start_observer)
 
     {:ok, state}
+  end
+
+  @impl true
+  def handle_call({:add_subscriber, new_subscriber}, _from, state) do
+    existing_pids = for {pid, _} <- state.subscribers, do: pid
+
+    if new_subscriber in existing_pids do
+      {:reply, {:error, :subscription_already_exists}, state}
+    else
+      if state.concurrency_limit == 1 do
+        {:reply, {:error, :subscription_already_exists}, state}
+      else
+        if length(state.subscribers) >= state.concurrency_limit do
+          {:reply, {:error, :too_many_subscribers}, state}
+        else
+          ref = Process.monitor(new_subscriber)
+          new_subscribers = [{new_subscriber, ref} | state.subscribers]
+          send(new_subscriber, {:subscribed, self()})
+          {:reply, {:ok, self()}, %{state | subscribers: new_subscribers}}
+        end
+      end
+    end
+  end
+
+  @impl true
+  def handle_call(:get_subscribers, _from, state) do
+    {:reply, state.subscribers, state}
   end
 
   @impl true
@@ -72,9 +104,23 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
 
     recorded_event = EventMapper.to_recorded_event(event, new_version, state.stream_prefix)
 
-    send(state.subscriber, {:events, [recorded_event]})
+    if length(state.subscribers) > 0 do
+      subscriber_idx = rem(state.subscriber_index, length(state.subscribers))
+      {subscriber, _ref} = Enum.at(state.subscribers, subscriber_idx)
+      send(subscriber, {:events, [recorded_event]})
 
-    {:noreply, %{state | stream_versions: Map.put(state.stream_versions, stream_id, new_version)}}
+      new_index = rem(subscriber_idx + 1, length(state.subscribers))
+
+      {:noreply,
+       %{
+         state
+         | stream_versions: Map.put(state.stream_versions, stream_id, new_version),
+           subscriber_index: new_index
+       }}
+    else
+      {:noreply,
+       %{state | stream_versions: Map.put(state.stream_versions, stream_id, new_version)}}
+    end
   end
 
   @impl true
@@ -90,12 +136,12 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
 
   @impl true
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
-    IO.inspect({ref, pid, reason}, label: "terminated")
+    new_subscribers = Enum.reject(state.subscribers, fn {_subscriber, r} -> r == ref end)
 
-    if ref == state.subscriber_ref do
-      {:stop, reason, state}
+    if length(new_subscribers) == 0 do
+      {:stop, reason, %{state | subscribers: []}}
     else
-      {:noreply, state}
+      {:noreply, %{state | subscribers: new_subscribers}}
     end
   end
 
@@ -122,8 +168,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
 
       case EventSourcingDB.observe_events(state.client, subject, opts) do
         {:ok, stream} ->
-          # DO NOT CHANGE the try-rescue block, this is vital for observing the
-          # stream around ESDB
           try do
             stream
             |> Stream.each(fn
@@ -133,7 +177,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
                 end
 
               other ->
-                IO.inspect(other, label: "non-event yielded")
+                :skip
             end)
             |> Stream.run()
           rescue
@@ -145,18 +189,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
         {:error, reason} ->
           IO.inspect(reason.reason, label: "observe error")
           send(parent_pid, {:stream_error, reason})
-
-          # stream
-          # |> Stream.each(fn
-          #   %EventSourcingDB.Event{} = event ->
-          #     if matches_stream_prefix?(event, state.stream_prefix) do
-          #       GenServer.cast(parent_pid, {:stream_event, event})
-          #     end
-          # end)
-          # |> Stream.run()
-
-          # {:error, _reason} ->
-          #   :skip
       end
     end)
   end
@@ -194,7 +226,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     end
   end
 
-  # Pattern match to build observe options based on start_from position
   defp observe_options(%State{start_from: :origin}) do
     %EventSourcingDB.ObserveEventsOptions{recursive: false}
   end
@@ -229,7 +260,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
          } = state
        )
        when is_integer(start_from) do
-    # For integer start_from, we use the provided value
     case event_number_to_event_id(client, start_from) do
       {:ok, event_id} ->
         %EventSourcingDB.ObserveEventsOptions{
@@ -245,8 +275,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     end
   end
 
-  # Convert global event_number to ESDB event_id
-  # event_number is 1-based, so offset = event_number (skip all events up to that point)
   defp event_number_to_event_id(_client, 0), do: :error
 
   defp event_number_to_event_id(client, event_number) when event_number > 0 do

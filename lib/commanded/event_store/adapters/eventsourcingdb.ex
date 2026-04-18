@@ -176,7 +176,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           pid(),
           Commanded.EventStore.Adapter.start_from(),
           Keyword.t()
-        ) :: {:ok, pid()} | {:error, :subscription_already_exists} | {:error, term()}
+        ) ::
+          {:ok, pid()}
+          | {:error, :subscription_already_exists}
+          | {:error, :too_many_subscribers}
+          | {:error, term()}
   def subscribe_to(adapter_meta, :all, subscription_name, subscriber, start_from, opts) do
     subscribe_to(adapter_meta, "$all", subscription_name, subscriber, start_from, opts)
   end
@@ -189,26 +193,35 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           pid(),
           Commanded.EventStore.Adapter.start_from(),
           Keyword.t()
-        ) :: {:ok, pid()} | {:error, :subscription_already_exists} | {:error, term()}
+        ) ::
+          {:ok, pid()}
+          | {:error, :subscription_already_exists}
+          | {:error, :too_many_subscribers}
+          | {:error, term()}
   def subscribe_to(adapter_meta, stream, subscription_name, subscriber, start_from, opts) do
-    # client = client(adapter_meta)
-    # stream_prefix = stream_prefix(adapter_meta)
-    #
-    # observer_registry = observer_registry(adapter_meta)
     event_store = server_name(adapter_meta)
     subscription_registry = subscription_registry(adapter_meta)
 
-    with {:ok, pid} <-
-           SubscriptionSupervisor.start_subscription(
-             event_store,
-             stream,
-             subscription_name,
-             subscriber,
-             start_from,
-             opts
-           ) do
-      Registry.register(subscription_registry, {stream, subscription_name}, pid)
-      {:ok, pid}
+    case SubscriptionSupervisor.start_subscription(
+           event_store,
+           stream,
+           subscription_name,
+           subscriber,
+           start_from,
+           opts
+         ) do
+      {:ok, pid} ->
+        Registry.register(subscription_registry, {stream, subscription_name}, pid)
+        {:ok, pid}
+
+      {:error, :too_many_subscribers} = error ->
+        error
+
+      {:error, :subscription_already_exists} = error ->
+        error
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
