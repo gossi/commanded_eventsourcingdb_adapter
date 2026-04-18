@@ -70,7 +70,6 @@ There are three storage types for stream_version:
 
 | Function | stream_versions (transient) | stream_versions (persistent) | checkpoint (persistent) |
 |----------|-----------------------------|-----------------------------|-------------------------|
-| `append_to_stream/5` | Increments per stream for all active Registry subscribers | Increments per stream in all active Subscription GenServers | N/A (checkpoint updated on ack, not write) |
 | `subscribe/2` | Creates via Registry, tracks in-memory | N/A (no GenServer) | None (transient) |
 | `subscribe_to/6` | N/A | Initializes based on start_from:<br>- `:origin` → empty<br>- `:current` → from checkpoint<br>- integer → from position | None (until first ack) |
 | `ack/3` | N/A (transient doesn't ack) | Increments per stream in GenServer | Stores event_number |
