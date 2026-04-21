@@ -50,7 +50,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     }
 
     name =
-      {:global, {event_store, __MODULE__, stream, subscription_name}}
+      {:global, {event_store, stream, subscription_name, subscriber}}
 
     GenServer.start_link(__MODULE__, state, name: name)
   end
@@ -162,9 +162,13 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
       opts = observe_options(state)
       subject = StreamMapper.to_subject(state.stream_prefix, state.stream)
 
-      case EventSourcingDB.observe_events(state.client, subject, opts) do
+      result = EventSourcingDB.observe_events(state.client, subject, opts)
+
+      case result do
         {:ok, stream} ->
           try do
+            Process.put(:observer_stream, true)
+
             stream
             |> Stream.each(fn
               %EventSourcingDB.Event{} = event ->
@@ -180,10 +184,12 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
             e ->
               IO.inspect(e, label: "observe events crashed")
               GenServer.cast(parent_pid, {:stream_error, e})
+          after
+            Process.delete(:observer_stream)
           end
 
         {:error, reason} ->
-          IO.inspect(reason.reason, label: "observe error")
+          IO.inspect(reason, label: "observe error")
           send(parent_pid, {:stream_error, reason})
       end
     end)
@@ -223,7 +229,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   end
 
   defp observe_options(%State{start_from: :origin}) do
-    %EventSourcingDB.ObserveEventsOptions{recursive: false}
+    %EventSourcingDB.ObserveEventsOptions{recursive: true}
   end
 
   defp observe_options(
@@ -237,7 +243,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     case event_number_to_event_id(client, event_number) do
       {:ok, event_id} ->
         %EventSourcingDB.ObserveEventsOptions{
-          recursive: false,
+          recursive: true,
           lower_bound: %EventSourcingDB.BoundOptions{
             type: :exclusive,
             id: event_id
@@ -245,7 +251,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
         }
 
       :error ->
-        %EventSourcingDB.ObserveEventsOptions{recursive: false}
+        %EventSourcingDB.ObserveEventsOptions{recursive: true}
     end
   end
 
@@ -259,7 +265,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     case event_number_to_event_id(client, start_from) do
       {:ok, event_id} ->
         %EventSourcingDB.ObserveEventsOptions{
-          recursive: false,
+          recursive: true,
           lower_bound: %EventSourcingDB.BoundOptions{
             type: :exclusive,
             id: event_id
@@ -267,7 +273,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
         }
 
       :error ->
-        %EventSourcingDB.ObserveEventsOptions{recursive: false}
+        %EventSourcingDB.ObserveEventsOptions{recursive: true}
     end
   end
 
