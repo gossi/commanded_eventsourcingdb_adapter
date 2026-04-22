@@ -98,7 +98,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     current_version = Map.get(state.stream_versions, stream_id, 0)
     new_version = current_version + 1
 
-    recorded_event = EventMapper.to_recorded_event(event, new_version, state.stream_prefix)
+    event_number =
+      if state.stream == :all or state.stream == "$all", do: nil, else: new_version
+
+    recorded_event =
+      EventMapper.to_recorded_event(event, new_version, state.stream_prefix, event_number)
 
     if length(state.subscribers) > 0 do
       subscriber_idx = rem(state.subscriber_index, length(state.subscribers))
