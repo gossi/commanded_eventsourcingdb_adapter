@@ -25,6 +25,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
       stream_versions: %{},
       last_acked_event_number: 0,
       last_global_event_number: 0,
+      last_esdb_event_id: nil,
       retry_count: 0
     ]
   end
@@ -107,19 +108,14 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
       "handle_call(:ack): received ack for event_number=#{event.event_number}, stream=#{state.stream}"
     )
 
-    checkpoint_number =
-      if state.stream == :all or state.stream == "$all" do
-        state.last_global_event_number
-      else
-        event.event_number
-      end
+    checkpoint_event_id = state.last_esdb_event_id || state.last_acked_event_number
 
     Logger.warning(
-      "handle_call(:ack): storing checkpoint #{checkpoint_number} for subscription #{state.subscription_name}"
+      "handle_call(:ack): storing checkpoint #{inspect(checkpoint_event_id)} for subscription #{state.subscription_name}"
     )
 
-    CheckpointStore.put(state.stream_prefix, state.subscription_name, checkpoint_number)
-    {:reply, :ok, %{state | last_acked_event_number: checkpoint_number}}
+    CheckpointStore.put(state.stream_prefix, state.subscription_name, checkpoint_event_id)
+    {:reply, :ok, %{state | last_acked_event_number: checkpoint_event_id}}
   end
 
   def handle_call({:ack, _other} = msg, _from, state) do
@@ -163,14 +159,16 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
          state
          | stream_versions: Map.put(state.stream_versions, stream_id, new_version),
            subscriber_index: new_index,
-           last_global_event_number: new_global
+           last_global_event_number: new_global,
+           last_esdb_event_id: event.id
        }}
     else
       {:noreply,
        %{
          state
          | stream_versions: Map.put(state.stream_versions, stream_id, new_version),
-           last_global_event_number: new_global
+           last_global_event_number: new_global,
+           last_esdb_event_id: event.id
        }}
     end
   end
@@ -263,136 +261,161 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     String.starts_with?(event.subject, subject_prefix)
   end
 
-  defp maybe_initialize_from_checkpoint(%State{} = state) do
-    case CheckpointStore.get(state.stream_prefix, state.subscription_name) do
-      {:ok, checkpoint} ->
-        Logger.debug(
-          "maybe_initialize_from_checkpoint: resuming from checkpoint #{checkpoint} for subscription #{state.subscription_name}"
-        )
+  defp get_latest_event_id(_client, nil), do: :error
 
-        # Always resume from checkpoint if one exists (persistent subscription behavior)
-        %{state | last_acked_event_number: checkpoint, last_global_event_number: checkpoint}
+  defp get_latest_event_id(client, subject) do
+    Logger.debug("get_latest_event_id: querying for latest event on subject=#{subject}")
 
-      :error ->
-        Logger.debug(
-          "maybe_initialize_from_checkpoint: no checkpoint found for subscription #{state.subscription_name}"
-        )
+    escaped_subject = String.replace(subject, "'", "''")
 
-        # No checkpoint exists - use start_from parameter
-        case state.start_from do
-          :origin ->
-            Logger.debug(
-              "maybe_initialize_from_checkpoint(:origin): starting from origin"
-            )
-
-            %{state | stream_versions: %{}, last_acked_event_number: 0, last_global_event_number: 0}
-
-          :current ->
-            Logger.debug(
-              "maybe_initialize_from_checkpoint(:current): no checkpoint, starting from origin"
-            )
-
-            %{state | stream_versions: %{}, last_acked_event_number: 0, last_global_event_number: 0}
-
-          _ when is_integer(state.start_from) ->
-            Logger.debug(
-              "maybe_initialize_from_checkpoint: start_from=#{state.start_from}"
-            )
-
-            %{
-              state
-              | stream_versions: %{state.stream => state.start_from},
-                last_acked_event_number: state.start_from,
-                last_global_event_number: state.start_from
-            }
-        end
-    end
-  end
-
-  defp observe_options(%State{start_from: :origin}) do
-    %EventSourcingDB.ObserveEventsOptions{recursive: true}
-  end
-
-  defp observe_options(
-         %State{
-           start_from: :current,
-           client: client
-         } = state
-       ) do
-    event_number = state.last_acked_event_number
-
-    case event_number_to_event_id(client, event_number) do
-      {:ok, event_id} ->
-        %EventSourcingDB.ObserveEventsOptions{
-          recursive: true,
-          lower_bound: %EventSourcingDB.BoundOptions{
-            type: :exclusive,
-            id: event_id
-          }
-        }
-
-      :error ->
-        %EventSourcingDB.ObserveEventsOptions{recursive: true}
-    end
-  end
-
-  defp observe_options(
-         %State{
-           start_from: start_from,
-           client: client
-         } = state
-       )
-       when is_integer(start_from) do
-    case event_number_to_event_id(client, start_from) do
-      {:ok, event_id} ->
-        %EventSourcingDB.ObserveEventsOptions{
-          recursive: true,
-          lower_bound: %EventSourcingDB.BoundOptions{
-            type: :exclusive,
-            id: event_id
-          }
-        }
-
-      :error ->
-        %EventSourcingDB.ObserveEventsOptions{recursive: true}
-    end
-  end
-
-  defp event_number_to_event_id(_client, 0), do: :error
-
-  defp event_number_to_event_id(client, event_number) when event_number > 0 do
-    Logger.debug("event_number_to_event_id: looking up event at position #{event_number}")
-    # event_number is 1-indexed, OFFSET is 0-indexed
     query = """
     FROM e IN events
-    ORDER BY e.id ASC
+    WHERE e.subject == '#{escaped_subject}'
+    ORDER BY e.id DESC
     LIMIT 1
-    OFFSET #{event_number - 1}
     SELECT e.id
     """
 
     case EventSourcingDB.run_eventql_query(client, query) do
       {:ok, stream} ->
-        results = Enum.to_list(stream)
-        Logger.debug("event_number_to_event_id: materialized results=#{inspect(results)}")
+        results = safe_stream_to_list(stream)
+
+        Logger.debug("get_latest_event_id: results=#{inspect(results)}")
 
         case results do
           [%{"id" => event_id}] ->
-            Logger.debug("event_number_to_event_id: found event_id=#{event_id}")
+            Logger.debug("get_latest_event_id: found event_id=#{event_id}")
             {:ok, event_id}
 
           [] ->
-            Logger.warning("event_number_to_event_id: empty results at position #{event_number}")
+            Logger.debug("get_latest_event_id: no events for subject")
             :error
 
           other ->
-            Logger.warning("event_number_to_event_id: unexpected result #{inspect(other)}")
+            Logger.warning("get_latest_event_id: unexpected result #{inspect(other)}")
             :error
         end
 
       {:error, reason} ->
-        Logger.warning("event_number_to_event_id: query failed: #{inspect(reason)}")
+        Logger.warning("get_latest_event_id: query failed: #{inspect(reason)}")
         :error
+    end
+  end
+
+  defp maybe_initialize_from_checkpoint(%State{} = state) do
+    case CheckpointStore.get(state.stream_prefix, state.subscription_name) do
+      {:ok, checkpoint} when is_binary(checkpoint) and checkpoint != "" ->
+        Logger.debug(
+          "maybe_initialize_from_checkpoint: resuming from checkpoint #{checkpoint} for subscription #{state.subscription_name}"
+        )
+
+        %{state | last_acked_event_number: checkpoint, last_esdb_event_id: checkpoint}
+
+      _ ->
+        Logger.debug(
+          "maybe_initialize_from_checkpoint: no checkpoint or invalid checkpoint for subscription #{state.subscription_name}"
+        )
+        initialize_without_checkpoint(state)
+    end
+  end
+
+  defp initialize_without_checkpoint(%State{} = state) do
+    case state.start_from do
+      :origin ->
+        Logger.debug(
+          "maybe_initialize_from_checkpoint(:origin): starting from origin"
+        )
+
+        %{state | stream_versions: %{}, last_acked_event_number: 0, last_global_event_number: 0, last_esdb_event_id: nil}
+
+      :current ->
+        Logger.debug(
+          "maybe_initialize_from_checkpoint(:current): querying for latest event to skip existing"
+        )
+
+        subject = StreamMapper.to_subject(state.stream_prefix, state.stream)
+
+        case get_latest_event_id(state.client, subject) do
+          {:ok, latest_event_id} ->
+            Logger.debug("maybe_initialize_from_checkpoint(:current): using latest_event_id=#{latest_event_id}")
+            %{state | last_acked_event_number: latest_event_id, last_esdb_event_id: latest_event_id}
+
+          :error ->
+            Logger.debug("maybe_initialize_from_checkpoint(:current): no events exist, starting from origin")
+            %{state | stream_versions: %{}, last_acked_event_number: 0, last_global_event_number: 0, last_esdb_event_id: nil}
+        end
+
+      _ when is_integer(state.start_from) ->
+        Logger.debug(
+          "maybe_initialize_from_checkpoint: start_from=#{state.start_from}"
+        )
+
+        start_from_str = Integer.to_string(state.start_from)
+
+        %{
+          state
+          | stream_versions: %{state.stream => state.start_from},
+            last_acked_event_number: start_from_str,
+            last_esdb_event_id: start_from_str
+        }
+    end
+  end
+
+  defp observe_options(%State{start_from: :origin} = state) do
+    maybe_apply_checkpoint(state, :origin)
+  end
+
+  defp observe_options(%State{start_from: :current} = state) do
+    maybe_apply_checkpoint(state, :current)
+  end
+
+  defp observe_options(%State{start_from: start_from} = state) when is_integer(start_from) do
+    maybe_apply_checkpoint(state, :integer)
+  end
+
+  defp observe_options(%State{} = state) do
+    maybe_apply_checkpoint(state, :default)
+  end
+
+  defp maybe_apply_checkpoint(%State{} = state, _source) do
+    last_event_id = state.last_acked_event_number
+
+    if is_binary(last_event_id) and last_event_id != "" do
+      Logger.debug("observe_options: using checkpoint #{last_event_id} for lower_bound")
+
+      %EventSourcingDB.ObserveEventsOptions{
+        recursive: true,
+        lower_bound: %EventSourcingDB.BoundOptions{
+          type: :exclusive,
+          id: last_event_id
+        }
+      }
+    else
+      if is_integer(last_event_id) and last_event_id > 0 do
+        event_id = Integer.to_string(last_event_id)
+        Logger.debug("observe_options: using checkpoint integer #{event_id} for lower_bound")
+
+        %EventSourcingDB.ObserveEventsOptions{
+          recursive: true,
+          lower_bound: %EventSourcingDB.BoundOptions{
+            type: :exclusive,
+            id: event_id
+          }
+        }
+      else
+        Logger.debug("observe_options: no checkpoint, observing from origin")
+        %EventSourcingDB.ObserveEventsOptions{recursive: true}
+      end
+    end
+  end
+
+  defp safe_stream_to_list(stream) do
+    try do
+      Enum.to_list(stream)
+    rescue
+      e in Protocol.UndefinedError ->
+        Logger.warning("safe_stream_to_list: stream enumeration failed: #{inspect(e)}")
+        []
     end
   end
 end
