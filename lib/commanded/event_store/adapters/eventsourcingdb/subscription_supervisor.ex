@@ -12,10 +12,16 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
 
   @impl true
   def init(config) do
+    # Extract persistent arguments from config
     client = Keyword.fetch!(config, :client)
-    stream_prefix = Keyword.get(config, :stream_prefix, "")
+    event_store = Keyword.fetch!(config, :event_store)
+    stream_prefix = Keyword.fetch!(config, :stream_prefix)
 
-    DynamicSupervisor.init(strategy: :one_for_one, extra_arguments: [client, stream_prefix])
+    # Pass these as extra_arguments to all children
+    DynamicSupervisor.init(
+      strategy: :one_for_one,
+      extra_arguments: [client, event_store, stream_prefix]
+    )
   end
 
   def start_subscription(
@@ -32,7 +38,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
 
     spec =
       subscription_spec(
-        event_store,
         stream,
         subscription_name,
         subscriber,
@@ -66,22 +71,21 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
     :ok
   end
 
-  @spec delete_subscription(term(), String.t() | :all, String.t()) :: :ok
-  def delete_subscription(_event_store, _stream, subscription_name) do
-    CheckpointStore.delete(subscription_name)
+  @spec delete_subscription(term(), String.t(), String.t(), String.t()) :: :ok
+  def delete_subscription(_event_store, stream_prefix, _stream, subscription_name) do
+    CheckpointStore.delete(stream_prefix, subscription_name)
     :ok
   end
 
   defp subscription_spec(
-         event_store,
          stream,
          subscription_name,
          subscriber,
          start_from,
          opts
        ) do
+    # Note: client, event_store, stream_prefix are prepended by extra_arguments
     start_args = [
-      event_store,
       stream,
       subscription_name,
       subscriber,

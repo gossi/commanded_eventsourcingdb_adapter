@@ -2,6 +2,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.InfraTest do
   alias Commanded.EventStore.Adapters.EventSourcingDB
   alias Commanded.EventStore.EventData
 
+  require Logger
+
   use Commanded.EventStore.EventSourcingDBTestCase
 
   defmodule BankAccountOpened do
@@ -149,6 +151,69 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.InfraTest do
       assert_receive {:subscribed, ^subscription2}
       # assert_receive {:events, received_events}
       # assert_receive_events(event_store, event_store_meta, subscription2, count: 2, from: 2)
+    end
+
+    test "should resume from checkpoint using :current", %{
+      event_store_meta: event_store_meta
+    } do
+      # First subscription: subscribe with :origin, receive events, ack
+      {:ok, subscription1} =
+        EventSourcingDB.subscribe_to(
+          event_store_meta,
+          :all,
+          "checkpoint_subscriber",
+          self(),
+          :origin,
+          []
+        )
+
+      assert_receive {:subscribed, ^subscription1}
+
+      :ok = EventSourcingDB.append_to_stream(event_store_meta, "stream1", 0, build_events(1))
+
+      assert_receive {:events, events1}
+      assert length(events1) == 1
+      first_event = hd(events1)
+
+      # Ack the event to create checkpoint
+      EventSourcingDB.ack_event(event_store_meta, subscription1, first_event)
+
+      # Wait for ack to be processed before unsubscribing
+      # Use a short timeout since we know ack should be instant
+      receive do
+        _ -> :ok
+      after
+        500 -> Logger.warning("No ack confirmation received")
+      end
+
+      :timer.sleep(100)
+
+      :ok = EventSourcingDB.unsubscribe(event_store_meta, subscription1)
+
+      # Second subscription: subscribe with :current, should skip already-seen events
+      {:ok, subscription2} =
+        EventSourcingDB.subscribe_to(
+          event_store_meta,
+          :all,
+          "checkpoint_subscriber",
+          self(),
+          :current,
+          []
+        )
+
+      assert_receive {:subscribed, ^subscription2}
+
+      # Append new events
+      :ok = EventSourcingDB.append_to_stream(event_store_meta, "stream2", 0, build_events(2))
+
+      # Should receive event with event_number = 2 (checkpoint resume)
+      assert_receive {:events, events2}
+      assert length(events2) == 1
+      second_event = hd(events2)
+
+      # The event_number should be 2, not 1 (proving checkpoint was used)
+      assert second_event.event_number == 2,
+             "Expected event_number 2 (after checkpoint), got #{second_event.event_number}"
     end
   end
 

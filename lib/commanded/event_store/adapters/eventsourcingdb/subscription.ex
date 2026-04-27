@@ -2,6 +2,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   @moduledoc false
   use GenServer
 
+  require Logger
+
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventMapper
   alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
   alias Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore
@@ -21,20 +23,26 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
       :subscribers,
       :subscriber_index,
       stream_versions: %{},
-      last_acked_event_number: 0
+      last_acked_event_number: 0,
+      last_global_event_number: 0,
+      retry_count: 0
     ]
   end
 
   def start_link(
         client,
-        stream_prefix,
         event_store,
+        stream_prefix,
         stream,
         subscription_name,
         subscriber,
         start_from,
         opts
       ) do
+    Logger.warning(
+      "Subscription.start_link: stream_prefix=#{stream_prefix}, subscription_name=#{subscription_name}"
+    )
+
     concurrency_limit = Keyword.get(opts, :concurrency_limit, 1)
 
     state = %State{
@@ -48,6 +56,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
       subscribers: [{subscriber, Process.monitor(subscriber)}],
       subscriber_index: 0
     }
+
+    Logger.warning("Subscription.start_link: state.stream_prefix=#{state.stream_prefix}")
 
     name =
       {:global, {event_store, stream, subscription_name, subscriber}}
@@ -92,17 +102,54 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   end
 
   @impl true
+  def handle_call({:ack, %RecordedEvent{} = event}, _from, state) do
+    Logger.warning(
+      "handle_call(:ack): received ack for event_number=#{event.event_number}, stream=#{state.stream}"
+    )
+
+    checkpoint_number =
+      if state.stream == :all or state.stream == "$all" do
+        state.last_global_event_number
+      else
+        event.event_number
+      end
+
+    Logger.warning(
+      "handle_call(:ack): storing checkpoint #{checkpoint_number} for subscription #{state.subscription_name}"
+    )
+
+    CheckpointStore.put(state.stream_prefix, state.subscription_name, checkpoint_number)
+    {:reply, :ok, %{state | last_acked_event_number: checkpoint_number}}
+  end
+
+  def handle_call({:ack, _other} = msg, _from, state) do
+    Logger.warning("handle_call(:ack): received unknown message: #{inspect(msg)}")
+    {:reply, :ok, state}
+  end
+
+  @impl true
   def handle_cast({:stream_event, %EventSourcingDB.Event{} = event}, state) do
+    Logger.warning("handle_cast(:stream_event): received event id=#{event.id}")
+
     stream_id = StreamMapper.get_stream_id(event.subject, state.stream_prefix)
 
     current_version = Map.get(state.stream_versions, stream_id, 0)
     new_version = current_version + 1
 
+    # For :all streams, track global event number sequentially (1, 2, 3...)
+    new_global = state.last_global_event_number + 1
+
+    Logger.warning(
+      "handle_cast(:stream_event): stream_id=#{stream_id}, new_version=#{new_version}, new_global=#{new_global}"
+    )
+
     event_number =
-      if state.stream == :all or state.stream == "$all", do: nil, else: new_version
+      if state.stream == :all or state.stream == "$all", do: new_global, else: new_version
 
     recorded_event =
       EventMapper.to_recorded_event(event, new_version, state.stream_prefix, event_number)
+
+    Logger.warning("handle_cast(:stream_event): sending event with event_number=#{event_number}")
 
     if length(state.subscribers) > 0 do
       subscriber_idx = rem(state.subscriber_index, length(state.subscribers))
@@ -115,11 +162,16 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
        %{
          state
          | stream_versions: Map.put(state.stream_versions, stream_id, new_version),
-           subscriber_index: new_index
+           subscriber_index: new_index,
+           last_global_event_number: new_global
        }}
     else
       {:noreply,
-       %{state | stream_versions: Map.put(state.stream_versions, stream_id, new_version)}}
+       %{
+         state
+         | stream_versions: Map.put(state.stream_versions, stream_id, new_version),
+           last_global_event_number: new_global
+       }}
     end
   end
 
@@ -129,12 +181,19 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   end
 
   @impl true
-  def handle_info({:ack, %RecordedEvent{} = event}, state) do
-    CheckpointStore.put(state.subscription_name, event.event_number)
-    {:noreply, %{state | last_acked_event_number: event.event_number}}
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %State{observer_ref: ref} = state) do
+    Logger.warning("Observer stream closed. Retrying in 1000ms...")
+
+    if state.retry_count >= 3 do
+      Logger.error("Observer stream failed after 3 retries. Giving up.")
+      {:noreply, state}
+    else
+      :timer.sleep(1_000)
+      :ok = GenServer.cast(self(), :start_observer)
+      {:noreply, %{state | retry_count: state.retry_count + 1}}
+    end
   end
 
-  @impl true
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     new_subscribers = Enum.reject(state.subscribers, fn {_subscriber, r} -> r == ref end)
 
@@ -145,8 +204,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
     end
   end
 
-  @impl true
-  def handle_info({:stream_error, _reason}, state) do
+  def handle_info(msg, state) do
+    Logger.warning("handle_info: received unhandled message: #{inspect(msg)}")
     {:noreply, state}
   end
 
@@ -156,7 +215,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
 
     ref = Process.monitor(pid)
 
-    {:noreply, %{state | observer_ref: ref}}
+    {:noreply, %{state | observer_ref: ref, retry_count: 0}}
   end
 
   defp start_observer(state) do
@@ -205,30 +264,48 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   end
 
   defp maybe_initialize_from_checkpoint(%State{} = state) do
-    case state.start_from do
-      :origin ->
-        CheckpointStore.delete(state.subscription_name)
-        %{state | stream_versions: %{}, last_acked_event_number: 0}
+    case CheckpointStore.get(state.stream_prefix, state.subscription_name) do
+      {:ok, checkpoint} ->
+        Logger.debug(
+          "maybe_initialize_from_checkpoint: resuming from checkpoint #{checkpoint} for subscription #{state.subscription_name}"
+        )
 
-      :current ->
-        case CheckpointStore.get(state.subscription_name) do
-          {:ok, last_seen_event_number} ->
+        # Always resume from checkpoint if one exists (persistent subscription behavior)
+        %{state | last_acked_event_number: checkpoint, last_global_event_number: checkpoint}
+
+      :error ->
+        Logger.debug(
+          "maybe_initialize_from_checkpoint: no checkpoint found for subscription #{state.subscription_name}"
+        )
+
+        # No checkpoint exists - use start_from parameter
+        case state.start_from do
+          :origin ->
+            Logger.debug(
+              "maybe_initialize_from_checkpoint(:origin): starting from origin"
+            )
+
+            %{state | stream_versions: %{}, last_acked_event_number: 0, last_global_event_number: 0}
+
+          :current ->
+            Logger.debug(
+              "maybe_initialize_from_checkpoint(:current): no checkpoint, starting from origin"
+            )
+
+            %{state | stream_versions: %{}, last_acked_event_number: 0, last_global_event_number: 0}
+
+          _ when is_integer(state.start_from) ->
+            Logger.debug(
+              "maybe_initialize_from_checkpoint: start_from=#{state.start_from}"
+            )
+
             %{
               state
-              | stream_versions: %{state.stream => last_seen_event_number},
-                last_acked_event_number: last_seen_event_number
+              | stream_versions: %{state.stream => state.start_from},
+                last_acked_event_number: state.start_from,
+                last_global_event_number: state.start_from
             }
-
-          :error ->
-            %{state | stream_versions: %{}, last_acked_event_number: 0}
         end
-
-      _ when is_integer(state.start_from) ->
-        %{
-          state
-          | stream_versions: %{state.stream => state.start_from},
-            last_acked_event_number: state.start_from
-        }
     end
   end
 
@@ -284,22 +361,37 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
   defp event_number_to_event_id(_client, 0), do: :error
 
   defp event_number_to_event_id(client, event_number) when event_number > 0 do
+    Logger.debug("event_number_to_event_id: looking up event at position #{event_number}")
+    # event_number is 1-indexed, OFFSET is 0-indexed
     query = """
     FROM e IN events
     ORDER BY e.id ASC
     LIMIT 1
-    OFFSET #{event_number}
+    OFFSET #{event_number - 1}
     SELECT e.id
     """
 
     case EventSourcingDB.run_eventql_query(client, query) do
-      {:ok, results} ->
-        case Enum.to_list(results) do
-          [%{"id" => event_id}] -> {:ok, event_id}
-          _ -> :error
+      {:ok, stream} ->
+        results = Enum.to_list(stream)
+        Logger.debug("event_number_to_event_id: materialized results=#{inspect(results)}")
+
+        case results do
+          [%{"id" => event_id}] ->
+            Logger.debug("event_number_to_event_id: found event_id=#{event_id}")
+            {:ok, event_id}
+
+          [] ->
+            Logger.warning("event_number_to_event_id: empty results at position #{event_number}")
+            :error
+
+          other ->
+            Logger.warning("event_number_to_event_id: unexpected result #{inspect(other)}")
+            :error
         end
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.warning("event_number_to_event_id: query failed: #{inspect(reason)}")
         :error
     end
   end

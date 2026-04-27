@@ -1,4 +1,4 @@
-defmodule Commanded.EventStore.Adapters.EventSourcingDB.InfraTest do
+defmodule Commanded.EventStore.Adapters.EventSourcingDB.StreamMapperTest do
   alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
 
   use ExUnit.Case, async: true

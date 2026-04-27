@@ -3,6 +3,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   Documentation for `Commanded.EventStore.Adapters.EventSourcingDB`.
   """
 
+  require Logger
+
   alias Commanded.EventStore.EventData
   alias Commanded.EventStore.Adapters.EventSourcingDB.Config
   alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
@@ -202,6 +204,10 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     event_store = server_name(adapter_meta)
     subscription_registry = subscription_registry(adapter_meta)
 
+    Logger.warning(
+      "subscribe_to: stream=#{stream}, subscription_name=#{subscription_name}, start_from=#{start_from}"
+    )
+
     case SubscriptionSupervisor.start_subscription(
            event_store,
            stream,
@@ -211,13 +217,19 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
            opts
          ) do
       {:ok, pid} ->
+        Logger.warning("subscribe_to: new subscription created, pid=#{inspect(pid)}")
         Registry.register(subscription_registry, {stream, subscription_name}, pid)
         {:ok, pid}
 
       {:error, :too_many_subscribers} = error ->
+        Logger.warning("subscribe_to: too_many_subscribers")
         error
 
       {:error, :subscription_already_exists} = error ->
+        Logger.warning(
+          "subscribe_to: subscription_already_exists, this should not happen for :current start_from"
+        )
+
         error
 
       {:error, reason} ->
@@ -228,15 +240,33 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @impl Commanded.EventStore.Adapter
   @spec ack_event(map(), pid(), Commanded.EventStore.RecordedEvent.t()) :: :ok
   def ack_event(_adapter_meta, subscription_pid, event) do
-    send(subscription_pid, {:ack, event})
-    :ok
+    Logger.debug(
+      "ack_event: sending ack for event_number=#{event.event_number} to subscription #{inspect(subscription_pid)}"
+    )
+
+    if Process.alive?(subscription_pid) do
+      try do
+        GenServer.call(subscription_pid, {:ack, event}, 5_000)
+      catch
+        :exit, _ -> {:error, :subscription_not_found}
+      end
+    else
+      Logger.warning("ack_event: subscription #{inspect(subscription_pid)} is not alive!")
+      {:error, :subscription_not_found}
+    end
   end
 
   @impl Commanded.EventStore.Adapter
   @spec unsubscribe(map(), pid()) :: :ok
   def unsubscribe(adapter_meta, subscription_pid) when is_pid(subscription_pid) do
     event_store = server_name(adapter_meta)
+
+    Logger.warning("unsubscribe: stopping subscription #{inspect(subscription_pid)}")
+
     SubscriptionSupervisor.stop_subscription(event_store, subscription_pid)
+
+    Logger.warning("unsubscribe: stopped")
+    :ok
   end
 
   @impl Commanded.EventStore.Adapter
@@ -245,11 +275,19 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   def delete_subscription(adapter_meta, stream_uuid, subscription_name) do
     event_store = server_name(adapter_meta)
     subscription_registry = subscription_registry(adapter_meta)
+    stream_prefix = stream_prefix(adapter_meta)
 
     case Registry.lookup(subscription_registry, {stream_uuid, subscription_name}) do
       [{pid, _}] ->
         SubscriptionSupervisor.stop_subscription(event_store, pid)
-        SubscriptionSupervisor.delete_subscription(event_store, stream_uuid, subscription_name)
+
+        SubscriptionSupervisor.delete_subscription(
+          event_store,
+          stream_prefix,
+          stream_uuid,
+          subscription_name
+        )
+
         :ok
 
       [] ->

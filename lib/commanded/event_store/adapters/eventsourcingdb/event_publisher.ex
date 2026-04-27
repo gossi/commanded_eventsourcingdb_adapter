@@ -31,7 +31,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
       :stream_prefix,
       :subject,
       :observer_ref,
-      stream_versions: %{}
+      stream_versions: %{},
+      retry_count: 0
     ]
   end
 
@@ -69,7 +70,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
   def handle_cast(:start_observer, state) do
     {:ok, pid} = start_observer(state)
     ref = Process.monitor(pid)
-    {:noreply, %{state | observer_ref: ref}}
+    {:noreply, %{state | observer_ref: ref, retry_count: 0}}
   end
 
   @impl true
@@ -98,10 +99,15 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %State{observer_ref: ref} = state) do
-    Logger.warning("Observer to EventStore is down. Will retry in 1000 ms.")
-    :timer.sleep(1_000)
-    :ok = GenServer.cast(self(), :start_observer)
-    {:noreply, state}
+    if state.retry_count >= 3 do
+      Logger.error("EventPublisher: Observer stream failed after 3 retries. Giving up.")
+      {:noreply, state}
+    else
+      Logger.warning("EventPublisher: Observer stream closed. Retrying in 1000ms...")
+      :timer.sleep(1_000)
+      :ok = GenServer.cast(self(), :start_observer)
+      {:noreply, %{state | retry_count: state.retry_count + 1}}
+    end
   end
 
   @impl true

@@ -41,7 +41,10 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapper do
   defp get_event_number(%Event{} = _, event_number) when is_integer(event_number),
     do: event_number
 
-  defp get_event_number(%Event{} = event, _), do: String.to_integer(event.id) + 1
+  defp get_event_number(%Event{} = event, _), do: to_global_event_number(event)
+
+  @spec to_global_event_number(Event.t()) :: non_neg_integer()
+  def to_global_event_number(%Event{} = event), do: String.to_integer(event.id) + 1
 
   def serialize_event_data(data, correlation_id, causation_id, metadata) do
     commanded_meta = %{
