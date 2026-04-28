@@ -8,7 +8,12 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapper do
 
   @commanded_metadata_key "__commanded_metadata__"
 
-  def to_recorded_event(%Event{} = event, event_number, stream_prefix \\ "") do
+  def to_recorded_event(
+        %Event{} = event,
+        stream_version \\ 0,
+        stream_prefix \\ "",
+        event_number \\ nil
+      ) do
     {data, correlation_id, causation_id, metadata} =
       extract_commanded_metadata(event.data, event.type)
 
@@ -16,11 +21,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapper do
       # event_id is a unique identifier for the event. See generate_event_id()
       # DO NOT CHANGE this field
       event_id: generate_event_id(event),
-      # event_number is global counter
+      # event_number is either a global or subscription based counter
       # DO NOT CHANGE this field
-      event_number: String.to_integer(event.id),
+      event_number: get_event_number(event, event_number),
       # Position of event within ONE specific stream
-      stream_version: event_number,
+      stream_version: stream_version,
       # The part of the stream_id relevant for commanded
       # DO NOT CHANGE this field
       stream_id: StreamMapper.get_stream_id(event.subject, stream_prefix),
@@ -33,9 +38,13 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapper do
     }
   end
 
-  def to_recorded_event(%Event{} = event) do
-    to_recorded_event(event, 0)
-  end
+  defp get_event_number(%Event{} = _, event_number) when is_integer(event_number),
+    do: event_number
+
+  defp get_event_number(%Event{} = event, _), do: to_global_event_number(event)
+
+  @spec to_global_event_number(Event.t()) :: non_neg_integer()
+  def to_global_event_number(%Event{} = event), do: String.to_integer(event.id) + 1
 
   def serialize_event_data(data, correlation_id, causation_id, metadata) do
     commanded_meta = %{

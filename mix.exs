@@ -34,8 +34,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.MixProject do
   defp deps do
     [
       {:commanded, "~> 1.2"},
-      {:eventsourcingdb, "~> 0.7.1"},
-      {:testcontainers, "~> 2.0.0"},
+      {:eventsourcingdb, "~> 1.0"},
+      {:testcontainers, "~> 2.3.0"},
       {:typedstruct, "~> 0.5"},
 
       # Test & build tooling

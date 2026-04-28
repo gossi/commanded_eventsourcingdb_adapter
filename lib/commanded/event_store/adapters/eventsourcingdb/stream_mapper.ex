@@ -4,12 +4,15 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper do
   @doc """
   Converts a stream identifier to an ESDB subject.
   """
-  def to_subject(:all, stream_prefix) do
-    "/" <> stream_prefix
+  def to_subject(stream_prefix) do
+    to_subject(stream_prefix, "")
   end
 
-  def to_subject(stream_uuid, stream_prefix) do
-    "/" <> stream_prefix <> stream_uuid
+  def to_subject(stream_prefix, :all), do: to_subject(stream_prefix)
+  def to_subject(stream_prefix, "$all"), do: to_subject(stream_prefix)
+
+  def to_subject(stream_prefix, stream_uuid) do
+    sanitize_subject("/" <> sanitize_stream_prefix(stream_prefix) <> "/" <> stream_uuid)
   end
 
   @doc """
@@ -24,16 +27,18 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper do
     subject
     |> String.replace(stream_prefix, "")
     |> String.replace("//", "/")
+    |> String.trim_leading("/")
+  end
 
-    # # Remove leading "/" if present
-    # without_leading_slash = String.trim_leading(subject, "/")
+  defp sanitize_stream_prefix(stream_prefix) do
+    stream_prefix
+    |> String.trim("/")
+  end
 
-    # # If stream_prefix is empty, return the rest
-    # if stream_prefix == "" do
-    #   without_leading_slash
-    # else
-    #   # Trim the stream_prefix (which doesn't have a leading "/")
-    #   String.trim_leading(without_leading_slash, stream_prefix)
-    # end
+  defp sanitize_subject(subject) do
+    subject
+    |> String.trim_trailing("/")
+    |> String.pad_leading(1, "/")
+    |> String.replace("//", "/")
   end
 end
