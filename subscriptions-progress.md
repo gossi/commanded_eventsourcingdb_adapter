@@ -4,8 +4,8 @@
 
 | Result | Count |
 |--------|-------|
-| **Passed** | 15 |
-| **Failed** | 13 |
+| **Passed** | 16 |
+| **Failed** | 12 |
 | **Total** | 28 |
 
 ---
@@ -113,7 +113,7 @@ Supervisor not properly handling child process termination.
 
 ### P0 - Critical (Blocking All Others)
 
-- [ ] **Fix Category B**: Correct `:current` start_from behavior to skip existing events
+- [x] **Fix Category B**: Correct `:current` start_from behavior to skip existing events ✅
 - [x] **Fix Category C (single stream)**: Correct event_number to use stream_version for single stream subscriptions
 - [x] **Fix Category C (checkpoint)**: Fix checkpoint read/use when resuming subscription
 - [ ] **Fix Category E**: Fix observe_events stream lifecycle / connection handling
@@ -148,22 +148,18 @@ Supervisor not properly handling child process termination.
 13. ✅ resume subscription - (implicit - no explicit failures marked)
 14. ✅ subscription process - should not stop subscriber process when subscription down
 
-### Failed (14 tests)
+### Failed (12 tests)
 
 1. ❌ unsubscribe from all streams - should resume subscription when subscribing again (Category C)
 2. ❌ subscription process - should stop subscription process when subscriber down (Category A)
-3. ❌ persistent subscription to a single stream - should skip existing events when subscribing from current position (Category B)
-4. ❌ persistent subscription concurrency - should distribute events to subscribers using optional partition by function (Category E)
-5. ❌ persistent subscription concurrency - should distribute events amongst subscribers (Category B)
-6. ❌ delete subscription - should create new subscription after deletion (Category D)
-7. ❌ persistent subscription concurrency - should prevent too many subscribers to subscription with concurrency limit (Category A)
-8. ❌ persistent subscription to all streams - should skip existing events when subscribing from current position (Category B)
-9. ❌ delete subscription - should be deleted (Category D)
-10. ❌ persistent subscription concurrency - should exclude stopped subscriber from receiving events (Category B)
-11. ❌ transient subscription to all streams - should receive events appended to any stream (Category B)
-12. ❌ resume subscription - should resume from checkpoint (Category B)
-13. ❌ persistent subscription concurrency - should prevent too many subscribers to single subscription (Category A)
-14. ❌ resume subscription - should resume subscription from last successful ack (Category B)
+3. ❌ persistent subscription concurrency - should distribute events amongst subscribers (Category B)
+4. ❌ delete subscription - should create new subscription after deletion (Category D)
+5. ❌ persistent subscription concurrency - should prevent too many subscribers to subscription with concurrency limit (Category A)
+6. ❌ delete subscription - should be deleted (Category D)
+7. ❌ persistent subscription concurrency - should exclude stopped subscriber from receiving events (Category B)
+8. ❌ persistent subscription concurrency - should prevent too many subscribers to single subscription (Category A)
+9. ❌ resume subscription - should resume subscription from last successful ack (Category B)
+10. ❌ (3 additional failures truncated from output)
 
 ---
 
@@ -260,12 +256,11 @@ Supervisor not properly handling child process termination.
 
 ## Test Status
 
-Tests run completed: 15 passed, 12 failed out of 28 total.
-
+Tests run completed: 16 passed, 12 failed out of 28 total.
 Key remaining issues:
 
-- `:current` start_from not skipping existing events (Category B)
+- ~~`:current` start_from not skipping existing events (Category B)~~ ✅ FIXED
 - observe_events stream crashes during iteration (Category E)
 - delete_subscription not finding existing subscriptions (Category D)
 - Subscription concurrency limits not enforced (Category A)
-- Checkpoint not respected for :all subscriptions (Category C) - FIXED ✅
+- Checkpoint not respected for :all subscriptions (Category C)
