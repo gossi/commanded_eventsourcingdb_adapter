@@ -7,8 +7,9 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
 
   alias Commanded.EventStore.EventData
   alias Commanded.EventStore.Adapters.EventSourcingDB.Config
-  alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventMapper
+  alias Commanded.EventStore.Adapters.EventSourcingDB.StreamMapper
+  alias Commanded.EventStore.Adapters.EventSourcingDB.Subscription
   alias Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor
 
   @behaviour Commanded.EventStore.Adapter
@@ -38,8 +39,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
       client: Config.client(esdb_config),
       stream_prefix: Keyword.get(config, :stream_prefix, ""),
       source: Keyword.get(config, :source),
-      observer_registry: Module.concat([event_store, ObserverRegistry]),
-      subscription_registry: Module.concat([event_store, SubscriptionRegistry])
+      observer_registry: Module.concat([event_store, ObserverRegistry])
     }
 
     {:ok, child_spec, adapter_meta}
@@ -64,13 +64,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           :ok
           | {:error, :wrong_expected_version}
           | {:error, term()}
-  def append_to_stream(
-        adapter_meta,
-        subject,
-        expected_version,
-        events,
-        _opts
-      ) do
+  def append_to_stream(adapter_meta, subject, expected_version, events, _opts) do
     client = client(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
     source = source(adapter_meta)
@@ -96,8 +90,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
         }
       end)
 
-    preconditions =
-      expected_version_to_preconditions(subject, expected_version)
+    preconditions = expected_version_to_preconditions(subject, expected_version)
 
     case EventSourcingDB.write_events(client, event_candidates, preconditions) do
       {:ok, _events} -> :ok
@@ -121,12 +114,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           Enumerable.t()
           | {:error, :stream_not_found}
           | {:error, term()}
-  def stream_forward(
-        adapter_meta,
-        subject,
-        start_version,
-        _read_batch_size
-      ) do
+  def stream_forward(adapter_meta, subject, start_version, _read_batch_size) do
     client = client(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
     subject = StreamMapper.to_subject(stream_prefix, subject)
@@ -155,8 +143,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   end
 
   @impl Commanded.EventStore.Adapter
-  # apparently Registry can't take an atom as string, so we use the same special
-  # string as the extreme adapter
   def subscribe(adapter_meta, :all), do: subscribe(adapter_meta, "$all")
 
   @impl Commanded.EventStore.Adapter
@@ -173,7 +159,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @impl Commanded.EventStore.Adapter
   @spec subscribe_to(
           map(),
-          :all,
+          :all | String.t(),
           String.t(),
           pid(),
           Commanded.EventStore.Adapter.start_from(),
@@ -187,72 +173,30 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     subscribe_to(adapter_meta, "$all", subscription_name, subscriber, start_from, opts)
   end
 
-  @impl Commanded.EventStore.Adapter
-  @spec subscribe_to(
-          map(),
-          String.t(),
-          String.t(),
-          pid(),
-          Commanded.EventStore.Adapter.start_from(),
-          Keyword.t()
-        ) ::
-          {:ok, pid()}
-          | {:error, :subscription_already_exists}
-          | {:error, :too_many_subscribers}
-          | {:error, term()}
   def subscribe_to(adapter_meta, stream, subscription_name, subscriber, start_from, opts) do
     event_store = server_name(adapter_meta)
-    subscription_registry = subscription_registry(adapter_meta)
 
-    Logger.warning(
-      "subscribe_to: stream=#{stream}, subscription_name=#{subscription_name}, start_from=#{start_from}"
+    SubscriptionSupervisor.start_subscription(
+      event_store,
+      stream,
+      subscription_name,
+      subscriber,
+      start_from,
+      opts
     )
-
-    case SubscriptionSupervisor.start_subscription(
-           event_store,
-           stream,
-           subscription_name,
-           subscriber,
-           start_from,
-           opts
-         ) do
-      {:ok, pid} ->
-        Logger.warning("subscribe_to: new subscription created, pid=#{inspect(pid)}")
-        Registry.register(subscription_registry, {stream, subscription_name}, pid)
-        {:ok, pid}
-
-      {:error, :too_many_subscribers} = error ->
-        Logger.warning("subscribe_to: too_many_subscribers")
-        error
-
-      {:error, :subscription_already_exists} = error ->
-        Logger.warning(
-          "subscribe_to: subscription_already_exists, this should not happen for :current start_from"
-        )
-
-        error
-
-      {:error, reason} ->
-        {:error, reason}
-    end
   end
 
   @impl Commanded.EventStore.Adapter
   @spec ack_event(map(), pid(), Commanded.EventStore.RecordedEvent.t()) :: :ok
   def ack_event(_adapter_meta, subscription_pid, event) do
-    Logger.debug(
-      "ack_event: sending ack for event_number=#{event.event_number} to subscription #{inspect(subscription_pid)}"
-    )
-
     if Process.alive?(subscription_pid) do
       try do
-        GenServer.call(subscription_pid, {:ack, event}, 5_000)
+        Subscription.ack(subscription_pid, event)
       catch
-        :exit, _ -> {:error, :subscription_not_found}
+        :exit, _ -> :ok
       end
     else
-      Logger.warning("ack_event: subscription #{inspect(subscription_pid)} is not alive!")
-      {:error, :subscription_not_found}
+      :ok
     end
   end
 
@@ -260,39 +204,26 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
   @spec unsubscribe(map(), pid()) :: :ok
   def unsubscribe(adapter_meta, subscription_pid) when is_pid(subscription_pid) do
     event_store = server_name(adapter_meta)
-
-    Logger.warning("unsubscribe: stopping subscription #{inspect(subscription_pid)}")
-
     SubscriptionSupervisor.stop_subscription(event_store, subscription_pid)
-
-    Logger.warning("unsubscribe: stopped")
-    :ok
   end
 
   @impl Commanded.EventStore.Adapter
   @spec delete_subscription(map(), String.t() | :all, String.t()) ::
           :ok | {:error, :subscription_not_found} | {:error, term()}
-  def delete_subscription(adapter_meta, stream_uuid, subscription_name) do
+  def delete_subscription(adapter_meta, :all, subscription_name) do
+    delete_subscription(adapter_meta, "$all", subscription_name)
+  end
+
+  def delete_subscription(adapter_meta, stream, subscription_name) do
     event_store = server_name(adapter_meta)
-    subscription_registry = subscription_registry(adapter_meta)
     stream_prefix = stream_prefix(adapter_meta)
 
-    case Registry.lookup(subscription_registry, {stream_uuid, subscription_name}) do
-      [{pid, _}] ->
-        SubscriptionSupervisor.stop_subscription(event_store, pid)
-
-        SubscriptionSupervisor.delete_subscription(
-          event_store,
-          stream_prefix,
-          stream_uuid,
-          subscription_name
-        )
-
-        :ok
-
-      [] ->
-        {:error, :subscription_not_found}
-    end
+    SubscriptionSupervisor.delete_subscription(
+      event_store,
+      stream_prefix,
+      stream,
+      subscription_name
+    )
   end
 
   @impl Commanded.EventStore.Adapter
@@ -324,16 +255,6 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
 
   defp stream_prefix(adapter_meta) do
     Map.get(adapter_meta, :stream_prefix, "")
-  end
-
-  defp observer_registry(adapter_meta) do
-    Map.fetch!(adapter_meta, :observer_registry)
-  end
-
-  defp subscription_registry(adapter_meta) do
-    event_store = server_name(adapter_meta)
-
-    Module.concat([event_store, SubscriptionRegistry])
   end
 
   defp source(adapter_meta) do

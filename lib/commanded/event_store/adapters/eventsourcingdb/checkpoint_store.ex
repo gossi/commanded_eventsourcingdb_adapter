@@ -1,64 +1,42 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore do
   @moduledoc """
-  ETS-backed checkpoint store for subscriptions.
+  ETS-backed checkpoint store for persistent subscriptions.
 
-  Stores the last processed event_number for each subscription to enable resumption.
-  Key includes stream_prefix to avoid collisions between test runs.
+  Stores the last acknowledged ESDB event id for each subscription so that the
+  subscription can resume from the next event after a restart. The key is
+  prefixed with the `stream_prefix` to avoid collisions between commanded
+  applications sharing the same VM.
   """
 
   @table_name :esdb_adapter_checkpoints
 
   @spec init() :: :ok
   def init do
-    case :ets.info(@table_name) do
-      :undefined ->
-        :ets.new(@table_name, [:set, :named_table, :public])
-        :ok
-
-      _ ->
-        :ok
-    end
-  end
-
-  @spec put(String.t(), String.t(), non_neg_integer()) :: :ok
-  def put(stream_prefix, subscription_name, last_seen_event_number) do
     ensure_table_exists()
-    key = checkpoint_key(stream_prefix, subscription_name)
-
-    require Logger
-    Logger.warning("CheckpointStore.put: storing key=#{inspect(key)}, value=#{last_seen_event_number}")
-
-    :ets.insert(@table_name, {key, last_seen_event_number})
     :ok
   end
 
-  @spec get(String.t(), String.t()) :: {:ok, non_neg_integer()} | :error
+  @spec put(String.t(), String.t(), String.t()) :: :ok
+  def put(stream_prefix, subscription_name, event_id) do
+    ensure_table_exists()
+    :ets.insert(@table_name, {checkpoint_key(stream_prefix, subscription_name), event_id})
+    :ok
+  end
+
+  @spec get(String.t(), String.t()) :: {:ok, String.t()} | :error
   def get(stream_prefix, subscription_name) do
     ensure_table_exists()
-    key = checkpoint_key(stream_prefix, subscription_name)
 
-    require Logger
-    Logger.debug("CheckpointStore.get: looking up key=#{key}")
-
-    case :ets.lookup(@table_name, key) do
-      [{^key, last_seen_event_number}] ->
-        Logger.debug("CheckpointStore.get: found key=#{key}, value=#{last_seen_event_number}")
-        {:ok, last_seen_event_number}
-
-      [] ->
-        Logger.debug("CheckpointStore.get: key=#{key} not found")
-        :error
+    case :ets.lookup(@table_name, checkpoint_key(stream_prefix, subscription_name)) do
+      [{_key, event_id}] -> {:ok, event_id}
+      [] -> :error
     end
   end
 
   @spec delete(String.t(), String.t()) :: :ok
   def delete(stream_prefix, subscription_name) do
     ensure_table_exists()
-    key = checkpoint_key(stream_prefix, subscription_name)
-
-    require Logger
-    Logger.warning("CheckpointStore.delete: deleting key=#{inspect(key)}")
-    :ets.delete(@table_name, key)
+    :ets.delete(@table_name, checkpoint_key(stream_prefix, subscription_name))
     :ok
   end
 
@@ -68,11 +46,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore do
 
   defp ensure_table_exists do
     case :ets.info(@table_name) do
-      :undefined ->
-        :ets.new(@table_name, [:set, :named_table, :public])
-
-      _ ->
-        :ok
+      :undefined -> :ets.new(@table_name, [:set, :named_table, :public])
+      _ -> :ok
     end
   end
 end

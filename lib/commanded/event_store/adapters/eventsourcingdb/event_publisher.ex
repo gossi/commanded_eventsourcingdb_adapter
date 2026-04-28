@@ -21,6 +21,8 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
   alias EventSourcingDB.Event
   alias EventSourcingDB.ObserveEventsOptions
 
+  @observer_restart_delay 250
+
   defmodule State do
     @moduledoc false
     defstruct [
@@ -30,14 +32,14 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
       :observer_registry,
       :stream_prefix,
       :subject,
+      :observer_pid,
       :observer_ref,
-      stream_versions: %{},
-      retry_count: 0
+      stream_versions: %{}
     ]
   end
 
   @spec start_link(
-          {EventSourcingDB.Client.t(), atom(), atom(), atom(), atom(), String.t()},
+          {EventSourcingDB.Client.t(), atom(), atom(), atom(), String.t()},
           GenServer.options()
         ) ::
           GenServer.on_start()
@@ -62,27 +64,20 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
   @impl true
   def init(%State{} = state) do
     Registry.register(state.observer_registry, state.stream_prefix, self())
-    :ok = GenServer.cast(self(), :start_observer)
-    {:ok, state}
+    {:ok, state, {:continue, :start_observer}}
   end
 
   @impl true
-  def handle_cast(:start_observer, state) do
-    {:ok, pid} = start_observer(state)
-    ref = Process.monitor(pid)
-    {:noreply, %{state | observer_ref: ref, retry_count: 0}}
+  def handle_continue(:start_observer, state) do
+    {:noreply, start_observer(state)}
   end
 
   @impl true
   def handle_cast({:stream_event, %Event{} = event}, state) do
     if matches_stream_prefix?(event, state.stream_prefix) do
       stream_id = StreamMapper.get_stream_id(event.subject, state.stream_prefix)
-
-      current_version = Map.get(state.stream_versions, stream_id, 0)
-      new_version = current_version + 1
-
+      new_version = Map.get(state.stream_versions, stream_id, 0) + 1
       recorded_event = EventMapper.to_recorded_event(event, new_version, state.stream_prefix)
-
       :ok = publish_event(recorded_event, state)
 
       {:noreply,
@@ -93,28 +88,26 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
   end
 
   @impl true
-  def handle_cast({:stream_event, _}, state) do
-    {:noreply, state}
-  end
-
-  @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %State{observer_ref: ref} = state) do
-    if state.retry_count >= 3 do
-      Logger.error("EventPublisher: Observer stream failed after 3 retries. Giving up.")
-      {:noreply, state}
-    else
-      Logger.warning("EventPublisher: Observer stream closed. Retrying in 1000ms...")
-      :timer.sleep(1_000)
-      :ok = GenServer.cast(self(), :start_observer)
-      {:noreply, %{state | retry_count: state.retry_count + 1}}
-    end
+    Process.send_after(self(), :restart_observer, @observer_restart_delay)
+    {:noreply, %{state | observer_pid: nil, observer_ref: nil}}
   end
 
-  @impl true
-  def handle_info(msg, state) do
-    IO.inspect(msg, label: "EventPublisher msg")
-    {:noreply, state}
+  def handle_info(:restart_observer, %State{observer_pid: nil} = state) do
+    {:noreply, start_observer(state)}
   end
+
+  def handle_info(:restart_observer, state), do: {:noreply, state}
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def terminate(_reason, %State{observer_pid: pid}) when is_pid(pid) do
+    if Process.alive?(pid), do: Process.exit(pid, :shutdown)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   defp publish_event(%RecordedEvent{} = event, state) do
     :ok = publish_to_all(event, state)
@@ -135,34 +128,35 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
     end)
   end
 
-  defp start_observer(state) do
+  defp start_observer(%State{} = state) do
+    parent = self()
+    client = state.client
+    subject = state.subject
     opts = %ObserveEventsOptions{recursive: true}
-    parent_pid = self()
 
-    Task.start(fn ->
-      case EventSourcingDB.observe_events(state.client, state.subject, opts) do
-        {:ok, stream} ->
-          try do
-            stream
-            |> Stream.each(fn
-              %EventSourcingDB.Event{} = event ->
-                GenServer.cast(parent_pid, {:stream_event, event})
+    {pid, ref} = spawn_monitor(fn -> run_observer(parent, client, subject, opts) end)
 
-              other ->
-                IO.inspect(other, label: "non-event yielded")
-            end)
-            |> Stream.run()
-          rescue
-            e ->
-              IO.inspect(e, label: "observe events crashed")
-              GenServer.cast(parent_pid, {:stream_error, e})
-          end
+    %{state | observer_pid: pid, observer_ref: ref}
+  end
 
-        {:error, reason} ->
-          IO.inspect(reason.reason, label: "observe error")
-          send(parent_pid, {:stream_error, reason})
-      end
-    end)
+  defp run_observer(parent, client, subject, opts) do
+    case EventSourcingDB.observe_events(client, subject, opts) do
+      {:ok, stream} -> consume_stream(parent, stream)
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp consume_stream(parent, stream) do
+    try do
+      Enum.each(stream, fn
+        %Event{} = event -> GenServer.cast(parent, {:stream_event, event})
+        _other -> :ok
+      end)
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
   end
 
   defp matches_stream_prefix?(%Event{} = event, stream_prefix) do
