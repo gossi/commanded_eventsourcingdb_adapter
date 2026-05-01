@@ -132,6 +132,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
           events
           |> Stream.with_index(1)
           |> Stream.filter(fn {_event, index} -> index >= max(start_version, 1) end)
+          # credo:disable-for-next-line Credo.Check.Refactor.Nesting
           |> Stream.map(fn {event, stream_version} ->
             EventMapper.to_recorded_event(event, stream_version, stream_prefix)
           end)

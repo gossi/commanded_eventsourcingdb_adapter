@@ -240,25 +240,29 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.Subscription do
           %{state | last_event_id: ckp}
 
         _ ->
-          case state.start_from do
-            :origin ->
-              state
-
-            :current ->
-              case latest_event_id(state) do
-                {:ok, id} -> %{state | last_event_id: id}
-                :empty -> state
-              end
-
-            n when is_integer(n) and n > 0 ->
-              %{state | last_event_id: Integer.to_string(n - 1)}
-
-            _ ->
-              state
-          end
+          initialize_position_from_start(state)
       end
 
     initialize_stream_version(state)
+  end
+
+  defp initialize_position_from_start(%State{} = state) do
+    case state.start_from do
+      :origin ->
+        state
+
+      :current ->
+        case latest_event_id(state) do
+          {:ok, id} -> %{state | last_event_id: id}
+          :empty -> state
+        end
+
+      n when is_integer(n) and n > 0 ->
+        %{state | last_event_id: Integer.to_string(n - 1)}
+
+      _ ->
+        state
+    end
   end
 
   defp initialize_stream_version(%State{last_event_id: nil} = state), do: state

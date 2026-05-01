@@ -40,7 +40,10 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.MixProject do
 
       # Test & build tooling
       {:ex_doc, "~> 0.21", only: :dev},
-      {:mox, "~> 1.0", only: :test}
+      {:mox, "~> 1.0", only: :test},
+
+      # Dev tooling
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 
