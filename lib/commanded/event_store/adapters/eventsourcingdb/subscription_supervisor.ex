@@ -85,8 +85,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.SubscriptionSupervisor d
     %{
       id: {Subscription, stream, subscription_name},
       start:
-        {Subscription, :start_link,
-         [stream, subscription_name, subscriber, start_from, opts]},
+        {Subscription, :start_link, [stream, subscription_name, subscriber, start_from, opts]},
       restart: :temporary,
       shutdown: 5_000,
       type: :worker
