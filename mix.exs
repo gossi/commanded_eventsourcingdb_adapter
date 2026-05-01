@@ -1,15 +1,44 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.MixProject do
   use Mix.Project
 
+  @version "0.0.1"
+  @source_url "https://github.com/gossi/commanded_eventsourcingdb_adapter"
+
   def project do
     [
       app: :commanded_eventsourcingdb_adapter,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
-      elixirc_paths: elixirc_paths(Mix.env()),
-      start_permanent: Mix.env() == :prod,
+      package: package(),
+      docs: docs(),
+      aliases: aliases(),
       deps: deps(),
-      aliases: aliases()
+      elixirc_paths: elixirc_paths(Mix.env()),
+      start_permanent: Mix.env() == :prod
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_url: @source_url,
+      source_ref: "#{@version}",
+      extras: ["README.md"]
+    ]
+  end
+
+  defp package do
+    [
+      name: "commanded_eventsourcingdb_adapter",
+      description: "Commanded adapter for EventSourcingDB",
+      links: %{
+        "GitHub" => @source_url,
+        "commanded" => "https://eventsourcingdb.io",
+        "EventSourcingDB" => "https://eventsourcingdb.io",
+        "EventSourcingDB Docs" => "https://docs.eventsourcingdb.io",
+        "EventSourcingDB SDK" => "https://hexdocs.pm/eventsourcingdb"
+      },
+      licenses: ["MIT"]
     ]
   end
 
@@ -39,7 +68,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.MixProject do
       {:typedstruct, "~> 0.5"},
 
       # Test & build tooling
-      {:ex_doc, "~> 0.21", only: :dev},
+      {:ex_doc, "~> 0.40.1", only: :dev, runtime: false, warn_if_outdated: true},
       {:mox, "~> 1.0", only: :test},
 
       # Dev tooling

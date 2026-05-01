@@ -1,4 +1,5 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.Config do
+  @moduledoc false
   def client(config) do
     EventSourcingDB.Client.new(config)
   end

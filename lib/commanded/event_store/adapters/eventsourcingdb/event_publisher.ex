@@ -1,5 +1,6 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventPublisher do
-  @moduledoc """
+  @moduledoc false
+  @doc """
   GenServer that observes events from EventSourcingDB and distributes them
   to subscribers via the Registry.
 
