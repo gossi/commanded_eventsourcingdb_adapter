@@ -40,16 +40,17 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapperTest do
     end
 
     test "extracts correlation_id from metadata" do
-      event = esdb_event(%{
-        "data" => %{
-          "__commanded_metadata__" => %{
-            "correlation_id" => "corr-uuid-123",
-            "causation_id" => "caus-uuid-456",
-            "metadata" => %{"key" => "value"}
-          },
-          "account_number" => "ACC123"
-        }
-      })
+      event =
+        esdb_event(%{
+          "data" => %{
+            "__commanded_metadata__" => %{
+              "correlation_id" => "corr-uuid-123",
+              "causation_id" => "caus-uuid-456",
+              "metadata" => %{"key" => "value"}
+            },
+            "account_number" => "ACC123"
+          }
+        })
 
       result = EventMapper.to_recorded_event(event, 1, "", nil)
 
@@ -59,16 +60,17 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapperTest do
     end
 
     test "extracts causation_id from metadata" do
-      event = esdb_event(%{
-        "data" => %{
-          "__commanded_metadata__" => %{
-            "correlation_id" => nil,
-            "causation_id" => "caus-uuid-456",
-            "metadata" => %{}
-          },
-          "account_number" => "ACC123"
-        }
-      })
+      event =
+        esdb_event(%{
+          "data" => %{
+            "__commanded_metadata__" => %{
+              "correlation_id" => nil,
+              "causation_id" => "caus-uuid-456",
+              "metadata" => %{}
+            },
+            "account_number" => "ACC123"
+          }
+        })
 
       result = EventMapper.to_recorded_event(event, 1, "", nil)
 
@@ -171,10 +173,11 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.EventMapperTest do
 
   describe "edge cases" do
     test "deserialize unknown type returns original data" do
-      event = esdb_event(%{
-        "type" => "UnknownEventType",
-        "data" => %{"field" => "value"}
-      })
+      event =
+        esdb_event(%{
+          "type" => "UnknownEventType",
+          "data" => %{"field" => "value"}
+        })
 
       result = EventMapper.to_recorded_event(event, 1, "", nil)
 
