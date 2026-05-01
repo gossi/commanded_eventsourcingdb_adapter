@@ -1,8 +1,4 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB do
-  @moduledoc """
-  Documentation for `Commanded.EventStore.Adapters.EventSourcingDB`.
-  """
-
   require Logger
 
   alias Commanded.EventStore.EventData

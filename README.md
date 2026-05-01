@@ -1,12 +1,25 @@
-# Commanded.EventStore.Adapters.EventSourcingDB
+# commanded_eventsourcingdb_adapter
 
-An Elixir event store adapter that integrates [Commanded](https://github.com/commanded/commanded) with [EventSourcingDB](https://eventsourcingdb.io) - a purpose-built database for event sourcing implementing the CloudEvents specification.
+An Elixir event store adapter that integrates [Commanded](https://github.com/commanded/commanded) with [EventSourcingDB](https://eventsourcingdb.io) – a purpose-built database for event sourcing.
 
 Documentation:
 
 - [`commanded_eventsourcingdb_adapter` on hexdocs](https://hexdocs.pm/commanded_eventsourcingdb_adapter)
 - [EventSourcingDB Documentation](https://docs.eventsourcingdb.io/)
 - [EventSourcingDB Elixir SDK](https://hexdocs.pm/eventsourcingdb)
+
+## Supported Features
+
+- ✅ `append_to_stream` - Write events to a stream with expected version handling
+- ✅ `stream_forward` - Read events from a stream
+- ✅ `subscribe` - Transient subscriptions for real-time notifications
+- ✅ `subscribe_to` - Persistent subscriptions with checkpointing
+- ✅ `ack_event` - Event acknowledgment for checkpoint updates
+- ✅ `unsubscribe` - Cancel subscriptions
+- ✅ `delete_subscription` - Remove subscriptions and checkpoints
+- ✅ Correlation and causation ID tracking via metadata
+- ✅ CloudEvents format for event storage
+- ❌  Snapshots - ESDB has no snapshot storage/feature. Read more about the [snapshot paradox](https://docs.eventsourcingdb.io/blog/2026/03/02/the-snapshot-paradox/)
 
 ## Installation
 
@@ -88,19 +101,6 @@ This is what an event looks like when stored in EventSourcingDB:
   "hash": "abc123..."
 }
 ```
-
-## Supported Features
-
-- ✅ `append_to_stream` - Write events to a stream with expected version handling
-- ✅ `stream_forward` - Read events from a stream
-- ✅ `subscribe` - Transient subscriptions for real-time notifications
-- ✅ `subscribe_to` - Persistent subscriptions with checkpointing
-- ✅ `ack_event` - Event acknowledgment for checkpoint updates
-- ✅ `unsubscribe` - Cancel subscriptions
-- ✅ `delete_subscription` - Remove subscriptions and checkpoints
-- ✅ Correlation and causation ID tracking via metadata
-- ✅ CloudEvents format for event storage
-- ❌  **Snapshots** - Returns `{:error, :snapshots_not_supported}`
 
 ## Testing
 

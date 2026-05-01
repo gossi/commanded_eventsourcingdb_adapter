@@ -1,5 +1,6 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore do
-  @moduledoc """
+  @moduledoc false
+  @doc """
   ETS-backed checkpoint store for persistent subscriptions.
 
   Stores the last acknowledged ESDB event id for each subscription so that the
