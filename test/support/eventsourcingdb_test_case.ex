@@ -4,6 +4,16 @@ defmodule Commanded.EventStore.EventSourcingDBTestCase do
   alias EventSourcingDB.TestContainer
 
   setup do
+    start()
+  end
+
+  def start_event_store(config \\ []) do
+    %{event_store_meta: event_store_meta} = start(config)
+
+    {:ok, event_store_meta}
+  end
+
+  defp start(config \\ []) do
     {:ok, container} = Testcontainers.start_container(TestContainer.new())
 
     wait_for_esdb_ready(container)
@@ -11,14 +21,18 @@ defmodule Commanded.EventStore.EventSourcingDBTestCase do
     unique_prefix = Commanded.UUID.uuid4()
     stream_prefix = "test/#{unique_prefix}/"
 
-    config = [
-      stream_prefix: stream_prefix,
-      source: "https://commanded.app",
-      client: [
-        base_url: TestContainer.get_base_url(container),
-        api_token: TestContainer.get_api_token(container)
-      ]
-    ]
+    config =
+      Keyword.merge(
+        [
+          stream_prefix: stream_prefix,
+          source: "https://commanded.app",
+          client: [
+            base_url: TestContainer.get_base_url(container),
+            api_token: TestContainer.get_api_token(container)
+          ]
+        ],
+        config
+      )
 
     {:ok, child_spec, event_store_meta} =
       Commanded.EventStore.Adapters.EventSourcingDB.child_spec(EventSourcingDBApplication, config)
@@ -39,15 +53,6 @@ defmodule Commanded.EventStore.EventSourcingDBTestCase do
       client: client
     }
   end
-
-  # setup context do
-  #   IO.inspect(context, label: "setup, context")
-  #   :ok = Commanded.EventStore.Adapters.EventSourcingDB.CheckpointStore.init()
-
-  #   # Create a unique stream prefix for this test to isolate events
-
-  #   {:ok, %{event_store_meta: event_store_meta, esdb_meta: event_store_meta}}
-  # end
 
   defp wait_for_esdb_ready(container, retries \\ 90) do
     base_url = TestContainer.get_base_url(container)
