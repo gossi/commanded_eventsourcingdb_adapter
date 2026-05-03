@@ -1,6 +1,4 @@
 defmodule Commanded.EventStore.Adapters.EventSourcingDB do
-  require Logger
-
   alias Commanded.EventStore.EventData
   alias Commanded.EventStore.Adapters.EventSourcingDB.Config
   alias Commanded.EventStore.Adapters.EventSourcingDB.EventMapper
@@ -115,26 +113,28 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     stream_prefix = stream_prefix(adapter_meta)
     subject = StreamMapper.to_subject(stream_prefix, subject)
 
-    case EventSourcingDB.read_events(client, subject) do
-      {:ok, events_stream} ->
-        events =
-          events_stream
-          |> Stream.filter(&match?(%EventSourcingDB.Event{}, &1))
-          |> Enum.to_list()
-
-        if Enum.empty?(events) do
-          {:error, :stream_not_found}
-        else
-          events
-          |> Stream.with_index(1)
-          |> Stream.filter(fn {_event, index} -> index >= max(start_version, 1) end)
-          # credo:disable-for-next-line Credo.Check.Refactor.Nesting
-          |> Stream.map(fn {event, stream_version} ->
-            EventMapper.to_recorded_event(event, stream_version, stream_prefix)
-          end)
+    task =
+      Task.async(fn ->
+        case EventSourcingDB.read_events(client, subject) do
+          {:ok, events_stream} -> {:ok, Enum.to_list(events_stream)}
+          {:error, reason} -> {:error, reason}
         end
+      end)
 
-      {:error, _reason} ->
+    case Task.await(task, 5_000) do
+      {:ok, []} ->
+        {:error, :stream_not_found}
+
+      {:ok, events} ->
+        events
+        |> Stream.with_index(1)
+        |> Stream.filter(fn {_event, index} -> index >= max(start_version, 1) end)
+        # credo:disable-for-next-line Credo.Check.Refactor.Nesting
+        |> Stream.map(fn {event, stream_version} ->
+          EventMapper.to_recorded_event(event, stream_version, stream_prefix)
+        end)
+
+      {:error, _} ->
         {:error, :stream_not_found}
     end
   end
@@ -148,8 +148,16 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB do
     event_store = server_name(adapter_meta)
     pubsub_name = Module.concat([event_store, PubSub])
 
-    with {:ok, _} <- Registry.register(pubsub_name, stream_uuid, []) do
-      :ok
+    case Registry.register(pubsub_name, stream_uuid, []) do
+      {:ok, _} ->
+        :ok
+
+      # already subscribed, that's fine
+      {:error, {:already_registered, _}} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
