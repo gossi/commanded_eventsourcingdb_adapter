@@ -102,6 +102,15 @@ This is what an event looks like when stored in EventSourcingDB:
 }
 ```
 
+## Event Types
+
+Commanded has a default type provider, that (de)serializes your module name as
+event type. In the example above, the event has `Elixir.AccountOpened` as event
+type. This is perhaps not the best value for your event type, consider your
+custom [type
+provider](https://hexdocs.pm/commanded/Commanded.EventStore.TypeProvider.html)
+for naming your events according to the CloudEvents spec.
+
 ## Testing
 
 Run tests using:
