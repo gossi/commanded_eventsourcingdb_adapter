@@ -47,8 +47,7 @@ config :my_app, MyApp,
       base_url: "http://localhost:3000"
     ],
     stream_prefix: "myapp",
-    source: "/myapp/"
-    name: MyApp.EventStore
+    source: "https://my.app"
   ]
 ```
 
@@ -58,7 +57,44 @@ config :my_app, MyApp,
 - `:stream_prefix` - Optional. Prefix for stream subjects. Defaults to `""`.
 - `:source` - Required. Event source URI for CloudEvents.
 
-## Metadata Storage
+## CloudEvents
+
+Commanded has its own internal event representation as
+[RecordedEvent](https://hexdocs.pm/commanded/Commanded.EventStore.RecordedEvent.html)
+whereas EventSourcingDB follows the [CloudEvents](https://cloudevents.io/)
+specification. The adapter maps between the two as described in [ADR
+0001](./docs/adrs/0001-event-semantics.md).
+
+### Event Source
+
+Define in your config, see above.
+
+### Event ID
+
+The event ID within commanded's `RecordedEvent` is a concatenation of the source + event id from ESDB: `#{event.source}/#{event.id}`
+
+### Event Types
+
+Commanded has a default type provider, that (de)serializes your module name as
+event type. In the example below, the event has `Elixir.AccountOpened` as event
+type. This is perhaps not the best value for your event type, consider your
+custom [type provider](https://hexdocs.pm/commanded/Commanded.EventStore.TypeProvider.html)
+for naming your events types.
+
+### Event Subject
+
+Commanded is stream-oriented, which translates to subjects as per CloudEvents
+spec, [ADR 0002](./docs/adrs/0002-stream-semantics.md) specifies the used semantics.
+
+The subject: `/#{stream_prefix}/#{identity_prefix}/#{aggregate_uuid}`
+
+- `stream_prefix`: defined in your `config/config.exs` within your `event_store`
+  config for your commanded app
+- `identity_prefix`: Using the prefix option in [`identify`](https://hexdocs.pm/commanded/Commanded.Commands.Router.html#identify/2)
+- `aggregate_uuid`: [define aggregate identity in your
+  router](https://hexdocs.pm/commanded/Commanded.Commands.Router.html#module-define-aggregate-identity)
+
+### Metadata Storage
 
 Commanded stores `correlation_id`, `causation_id`, and `metadata` as part of the
 event's `data` field using a special `__commanded_metadata__` key:
@@ -83,7 +119,7 @@ This is what an event looks like when stored in EventSourcingDB:
 {
   "specversion": "1.0",
   "id": "5",
-  "source": "/myapp/",
+  "source": "https://my.app",
   "subject": "/myapp/bank-account/ACC123",
   "type": "Elixir.AccountOpened",
   "datacontenttype": "application/json",
@@ -101,15 +137,6 @@ This is what an event looks like when stored in EventSourcingDB:
   "hash": "abc123..."
 }
 ```
-
-## Event Types
-
-Commanded has a default type provider, that (de)serializes your module name as
-event type. In the example above, the event has `Elixir.AccountOpened` as event
-type. This is perhaps not the best value for your event type, consider your
-custom [type
-provider](https://hexdocs.pm/commanded/Commanded.EventStore.TypeProvider.html)
-for naming your events according to the CloudEvents spec.
 
 ## Testing
 
