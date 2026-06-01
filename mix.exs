@@ -2,7 +2,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.MixProject do
   use Mix.Project
 
   @version "0.0.1"
-  @source_url "https://github.com/gossi/commanded_eventsourcingdb_adapter"
+  @source_url "https://github.com/gossi/commanded-eventsourcingdb-adapter"
 
   def project do
     [
@@ -31,6 +31,7 @@ defmodule Commanded.EventStore.Adapters.EventSourcingDB.MixProject do
     [
       name: "commanded_eventsourcingdb_adapter",
       description: "Commanded adapter for EventSourcingDB",
+      source_url: @source_url,
       links: %{
         "GitHub" => @source_url,
         "commanded" => "https://eventsourcingdb.io",
