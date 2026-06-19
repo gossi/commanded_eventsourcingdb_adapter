@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Install inotify-tools
         run: sudo apt-get install -y inotify-tools
       - name: Use Elixir
